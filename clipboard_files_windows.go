@@ -155,7 +155,7 @@ func writeClipboardMemory(format uintptr, data []byte) error {
 		procGlobalFree.Call(hMem)
 		return fmt.Errorf("GlobalLock: %v", callErr)
 	}
-	copy(unsafe.Slice((*byte)(unsafe.Pointer(ptr)), len(data)), data)
+	copy(unsafe.Slice((*byte)(*(*unsafe.Pointer)(unsafe.Pointer(&ptr))), len(data)), data)
 	procGlobalUnlock.Call(hMem)
 	if !openClipboardForFiles() {
 		procGlobalFree.Call(hMem)
@@ -205,7 +205,7 @@ func remoteFileMarkerMatches(offerID string) bool {
 		return false
 	}
 	data := make([]byte, size)
-	copy(data, unsafe.Slice((*byte)(unsafe.Pointer(ptr)), size))
+	copy(data, unsafe.Slice((*byte)(*(*unsafe.Pointer)(unsafe.Pointer(&ptr))), size))
 	return strings.TrimRight(string(data), "\x00") == offerID
 }
 
