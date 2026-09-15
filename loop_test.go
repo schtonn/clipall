@@ -1,72 +1,85 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func event(contentID uint64, source string, timestamp int64) EventID {
+	return EventID{ContentID: contentID, Source: source, Timestamp: timestamp}
+}
 
 func TestRingBufferEmpty(t *testing.T) {
 	var r RingBuffer
-	if r.Contains(1) {
+	if r.Contains(event(1, "node-a", 1)) {
 		t.Fatal("Contains returned true on empty buffer")
 	}
 }
 
-func TestRingBufferAddContains(t *testing.T) {
+func TestRingBufferAddContainsExactEvent(t *testing.T) {
 	var r RingBuffer
-	r.Add(42)
-	if !r.Contains(42) {
-		t.Fatal("Contains returned false for added ID")
+	id := event(42, "node-a", 100)
+	r.Add(id)
+	if !r.Contains(id) {
+		t.Fatal("Contains returned false for added event")
 	}
 }
 
-func TestRingBufferNotContains(t *testing.T) {
+func TestRingBufferSameContentDifferentSourceOrTimestamp(t *testing.T) {
 	var r RingBuffer
-	r.Add(1)
-	r.Add(2)
-	r.Add(3)
-	if r.Contains(99) {
-		t.Fatal("Contains returned true for ID not added")
+	r.Add(event(42, "node-a", 100))
+
+	if r.Contains(event(42, "node-b", 100)) {
+		t.Fatal("same content from a different source is a different event")
+	}
+	if r.Contains(event(42, "node-a", 101)) {
+		t.Fatal("same content with a different timestamp is a different event")
 	}
 }
 
 func TestRingBufferWrapAround(t *testing.T) {
 	var r RingBuffer
-	// Add more than ringSize entries so the oldest are evicted.
 	for i := uint64(1); i <= ringSize+10; i++ {
-		r.Add(i)
+		r.Add(event(i, "node-a", int64(i)))
 	}
-	// The first 10 entries should have been evicted.
 	for i := uint64(1); i <= 10; i++ {
-		if r.Contains(i) {
-			t.Fatalf("Contains returned true for evicted ID %d", i)
+		if r.Contains(event(i, "node-a", int64(i))) {
+			t.Fatalf("Contains returned true for evicted event %d", i)
 		}
 	}
-	// The newest entries should still be present.
 	for i := uint64(11); i <= ringSize+10; i++ {
-		if !r.Contains(i) {
-			t.Fatalf("Contains returned false for ID %d that should be present", i)
+		if !r.Contains(event(i, "node-a", int64(i))) {
+			t.Fatalf("Contains returned false for retained event %d", i)
 		}
 	}
 }
 
-func TestRingBufferFull(t *testing.T) {
-	var r RingBuffer
-	for i := uint64(0); i < ringSize; i++ {
-		r.Add(i + 100)
+func TestEchoBufferOnlyConsumesMatchingContentAndType(t *testing.T) {
+	var echoes EchoBuffer
+	now := time.Now()
+	id := event(42, "remote", 100)
+	echoes.Add(TypeText, 42, id, now)
+
+	if _, ok := echoes.Consume(TypeText, 99, now); ok {
+		t.Fatal("unrelated clipboard content was suppressed")
 	}
-	for i := uint64(0); i < ringSize; i++ {
-		if !r.Contains(i + 100) {
-			t.Fatalf("Contains returned false for ID %d in full buffer", i+100)
-		}
+	if _, ok := echoes.Consume(TypeImage, 42, now); ok {
+		t.Fatal("same content hash with a different type was suppressed")
+	}
+	got, ok := echoes.Consume(TypeText, 42, now)
+	if !ok || got != id {
+		t.Fatalf("matching echo = (%+v, %v), want (%+v, true)", got, ok, id)
+	}
+	if _, ok := echoes.Consume(TypeText, 42, now); ok {
+		t.Fatal("echo marker was not consumed")
 	}
 }
 
-func TestRingBufferZeroValue(t *testing.T) {
-	var r RingBuffer
-	// Zero value should work without any initialization.
-	if r.Contains(0) {
-		t.Fatal("zero-value buffer should not contain anything before Add")
-	}
-	r.Add(7)
-	if !r.Contains(7) {
-		t.Fatal("Contains returned false after Add on zero-value buffer")
+func TestEchoBufferExpires(t *testing.T) {
+	var echoes EchoBuffer
+	now := time.Now()
+	echoes.Add(TypeText, 42, event(42, "remote", 100), now)
+	if _, ok := echoes.Consume(TypeText, 42, now.Add(echoTTL)); ok {
+		t.Fatal("expired echo marker suppressed a later clipboard event")
 	}
 }

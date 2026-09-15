@@ -14,24 +14,27 @@ import (
 	"github.com/cespare/xxhash/v2"
 )
 
-// Node is the core orchestrator. It watches the local clipboard, sends changes
-// to peers, and writes incoming clipboard data from peers.
-const writeCooldown = 500 * time.Millisecond
-
 type Node struct {
 	listenPort  int
 	peers       []*Peer
 	incoming    chan Message
 	ring        RingBuffer
-	lastWrite   time.Time // when we last wrote to clipboard from a remote
-	imageDir    string    // if set, save incoming images to this directory
-	imageMaxMB  int       // max total size of saved images in MB (0 = unlimited)
+	echoes      EchoBuffer
+	source      string
+	lastEventTS int64
+	imageDir    string // if set, save incoming images to this directory
+	imageMaxMB  int    // max total size of saved images in MB (0 = unlimited)
 }
 
 func NewNode(listenPort int, peerAddrs []string, imageDir string, imageMaxMB int) *Node {
+	source, err := os.Hostname()
+	if err != nil || source == "" {
+		source = "unknown"
+	}
 	n := &Node{
 		listenPort: listenPort,
 		incoming:   make(chan Message, 32),
+		source:     source,
 		imageDir:   imageDir,
 		imageMaxMB: imageMaxMB,
 	}
@@ -39,6 +42,24 @@ func NewNode(listenPort int, peerAddrs []string, imageDir string, imageMaxMB int
 		n.peers = append(n.peers, NewPeer(addr))
 	}
 	return n
+}
+
+// newMessage gives each local clipboard event a stable origin and a strictly
+// increasing timestamp. Re-copying identical content therefore remains a new
+// event instead of being discarded as a duplicate.
+func (n *Node) newMessage(typ MessageType, data []byte) Message {
+	timestamp := time.Now().UnixNano()
+	if timestamp <= n.lastEventTS {
+		timestamp = n.lastEventTS + 1
+	}
+	n.lastEventTS = timestamp
+	return Message{
+		Type:      typ,
+		ContentID: xxhash.Sum64(data),
+		Source:    n.source,
+		Timestamp: timestamp,
+		Payload:   data,
+	}
 }
 
 // Run starts the node: listener, peer connections, clipboard watcher, and the
@@ -81,23 +102,14 @@ func (n *Node) Run(ctx context.Context) error {
 			if len(data) == 0 {
 				continue
 			}
-			// Cooldown: ignore Watch events shortly after we wrote to clipboard.
-			// This prevents echo-back when the clipboard round-trip (write→read)
-			// produces slightly different bytes (e.g. UTF-8→UTF-16→UTF-8 on Windows).
-			if time.Since(n.lastWrite) < writeCooldown {
-				log.Printf("[node] ignoring clipboard event during cooldown (%d bytes)", len(data))
-				continue
-			}
 			id := xxhash.Sum64(data)
-			if n.ring.Contains(id) {
-				log.Printf("[node] ignoring clipboard event (in ring buffer), hash=%016x", id)
+			if event, ok := n.echoes.Consume(TypeText, id, time.Now()); ok {
+				log.Printf("[node] ignoring expected clipboard echo, hash=%016x, source=%q, timestamp=%d",
+					id, event.Source, event.Timestamp)
 				continue
 			}
-			msg := Message{
-				Type:      TypeText,
-				ContentID: id,
-				Payload:   data,
-			}
+			msg := n.newMessage(TypeText, data)
+			n.ring.Add(msg.EventID())
 			for _, p := range n.peers {
 				p.Send(msg)
 			}
@@ -108,20 +120,14 @@ func (n *Node) Run(ctx context.Context) error {
 			if len(data) == 0 {
 				continue
 			}
-			if time.Since(n.lastWrite) < writeCooldown {
-				log.Printf("[node] ignoring image event during cooldown (%d bytes)", len(data))
-				continue
-			}
 			id := xxhash.Sum64(data)
-			if n.ring.Contains(id) {
-				log.Printf("[node] ignoring image event (in ring buffer), hash=%016x", id)
+			if event, ok := n.echoes.Consume(TypeImage, id, time.Now()); ok {
+				log.Printf("[node] ignoring expected image echo, hash=%016x, source=%q, timestamp=%d",
+					id, event.Source, event.Timestamp)
 				continue
 			}
-			msg := Message{
-				Type:      TypeImage,
-				ContentID: id,
-				Payload:   data,
-			}
+			msg := n.newMessage(TypeImage, data)
+			n.ring.Add(msg.EventID())
 			for _, p := range n.peers {
 				p.Send(msg)
 			}
@@ -129,17 +135,23 @@ func (n *Node) Run(ctx context.Context) error {
 				len(data), len(n.peers), id)
 
 		case msg := <-n.incoming:
-			if n.ring.Contains(msg.ContentID) {
-				log.Printf("[node] ignoring incoming (in ring buffer), hash=%016x", msg.ContentID)
+			event := msg.EventID()
+			if n.ring.Contains(event) {
+				log.Printf("[node] ignoring incoming duplicate, hash=%016x, source=%q, timestamp=%d",
+					msg.ContentID, msg.Source, msg.Timestamp)
 				continue
 			}
-			n.ring.Add(msg.ContentID)
+			n.ring.Add(event)
 			switch msg.Type {
 			case TypeText:
-				n.lastWrite = time.Now()
 				writeText(msg.Payload)
 				// Verify: read back and check if clipboard matches what we wrote.
 				readback := readText()
+				echoID := msg.ContentID
+				if len(readback) > 0 {
+					echoID = xxhash.Sum64(readback)
+				}
+				n.echoes.Add(TypeText, echoID, event, time.Now())
 				if string(readback) == string(msg.Payload) {
 					log.Printf("[node] received %d bytes, write verified OK, hash=%016x, preview=%s",
 						len(msg.Payload), msg.ContentID, debugPreview(msg.Payload))
@@ -148,20 +160,18 @@ func (n *Node) Run(ctx context.Context) error {
 						len(msg.Payload), len(readback))
 					log.Printf("[node]   wrote:    %s", debugHex(msg.Payload))
 					log.Printf("[node]   readback: %s", debugHex(readback))
-					// Add readback hash to ring too, so the mismatched Watch event is caught.
-					n.ring.Add(xxhash.Sum64(readback))
 				}
 			case TypeImage:
-				n.lastWrite = time.Now()
 				writeImage(msg.Payload)
 				// Image readback will differ cross-platform (PNG→DIB→PNG re-encoding
-				// on Windows produces different bytes). Always add the readback hash
-				// to the ring buffer to suppress the echo, don't treat mismatch as error.
+				// on Windows produces different bytes). Track that exact readback as
+				// an expected echo; don't treat the mismatch as an error.
 				readback := readImage()
-				rbHash := xxhash.Sum64(readback)
-				if rbHash != msg.ContentID {
-					n.ring.Add(rbHash)
+				rbHash := msg.ContentID
+				if len(readback) > 0 {
+					rbHash = xxhash.Sum64(readback)
 				}
+				n.echoes.Add(TypeImage, rbHash, event, time.Now())
 				log.Printf("[node] received image %d bytes, hash=%016x, wrote to clipboard (%d bytes readback)",
 					len(msg.Payload), msg.ContentID, len(readback))
 

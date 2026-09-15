@@ -49,19 +49,21 @@ func TestIncomingTextRingBufferDedup(t *testing.T) {
 	msg := Message{
 		Type:      TypeText,
 		ContentID: id,
+		Source:    "node-a",
+		Timestamp: 100,
 		Payload:   payload,
 	}
 
 	// First time: not in ring.
-	if n.ring.Contains(msg.ContentID) {
+	if n.ring.Contains(msg.EventID()) {
 		t.Fatal("ring should not contain ID before Add")
 	}
 
 	// Simulate what the incoming handler does: add to ring.
-	n.ring.Add(msg.ContentID)
+	n.ring.Add(msg.EventID())
 
 	// Second time: ring should reject the duplicate.
-	if !n.ring.Contains(msg.ContentID) {
+	if !n.ring.Contains(msg.EventID()) {
 		t.Fatal("ring should contain ID after Add")
 	}
 }
@@ -78,16 +80,18 @@ func TestIncomingImageRingBufferDedup(t *testing.T) {
 	msg := Message{
 		Type:      TypeImage,
 		ContentID: id,
+		Source:    "node-a",
+		Timestamp: 100,
 		Payload:   payload,
 	}
 
-	if n.ring.Contains(msg.ContentID) {
+	if n.ring.Contains(msg.EventID()) {
 		t.Fatal("ring should not contain image ID before Add")
 	}
 
-	n.ring.Add(msg.ContentID)
+	n.ring.Add(msg.EventID())
 
-	if !n.ring.Contains(msg.ContentID) {
+	if !n.ring.Contains(msg.EventID()) {
 		t.Fatal("ring should contain image ID after Add")
 	}
 }
@@ -102,21 +106,23 @@ func TestIncomingMixedTypeDedup(t *testing.T) {
 	imgID := xxhash.Sum64(imgPayload)
 
 	// Simulate receiving a text message, then an image message.
-	n.ring.Add(textID)
-	n.ring.Add(imgID)
+	textEvent := EventID{ContentID: textID, Source: "node-a", Timestamp: 100}
+	imgEvent := EventID{ContentID: imgID, Source: "node-a", Timestamp: 101}
+	n.ring.Add(textEvent)
+	n.ring.Add(imgEvent)
 
 	// Both should now be detected as duplicates.
-	if !n.ring.Contains(textID) {
+	if !n.ring.Contains(textEvent) {
 		t.Fatal("ring should contain text ID")
 	}
-	if !n.ring.Contains(imgID) {
+	if !n.ring.Contains(imgEvent) {
 		t.Fatal("ring should contain image ID")
 	}
 
 	// A new, different payload should not be blocked.
 	otherPayload := []byte("different content")
 	otherID := xxhash.Sum64(otherPayload)
-	if n.ring.Contains(otherID) {
+	if n.ring.Contains(EventID{ContentID: otherID, Source: "node-a", Timestamp: 102}) {
 		t.Fatal("ring should not contain ID for content never added")
 	}
 }
@@ -182,32 +188,25 @@ func TestIncomingDrainBothTypes(t *testing.T) {
 	}
 }
 
-func TestRingBufferPreventsLoopAcrossTypes(t *testing.T) {
-	// Simulate the full loop-prevention scenario: a node receives content,
-	// adds it to the ring, then sees the same content from the clipboard
-	// watcher. Both text and image types should be caught.
+func TestNewMessageTreatsRepeatedContentAsDistinctEvents(t *testing.T) {
 	n := NewNode(9876, nil, "", 0)
+	n.source = "node-a"
 
-	textData := []byte("clipboard text")
-	imgData := make([]byte, 512)
-	for i := range imgData {
-		imgData[i] = byte(i % 256)
+	data := []byte("clipboard text")
+	first := n.newMessage(TypeText, data)
+	second := n.newMessage(TypeText, data)
+
+	if first.ContentID != second.ContentID {
+		t.Fatal("identical clipboard content should have the same content hash")
 	}
-
-	textID := xxhash.Sum64(textData)
-	imgID := xxhash.Sum64(imgData)
-
-	// Simulate incoming handler adding to ring.
-	n.ring.Add(textID)
-	n.ring.Add(imgID)
-
-	// Simulate clipboard watcher producing the same content.
-	// The node's event loop checks ring.Contains before sending to peers.
-	if !n.ring.Contains(xxhash.Sum64(textData)) {
-		t.Error("text echo should be caught by ring buffer")
+	if first.Source != "node-a" || second.Source != "node-a" {
+		t.Fatal("local source was not attached to clipboard events")
 	}
-	if !n.ring.Contains(xxhash.Sum64(imgData)) {
-		t.Error("image echo should be caught by ring buffer")
+	if second.Timestamp <= first.Timestamp {
+		t.Fatalf("timestamps are not strictly increasing: first=%d second=%d", first.Timestamp, second.Timestamp)
+	}
+	if first.EventID() == second.EventID() {
+		t.Fatal("repeated copies must have distinct event IDs")
 	}
 }
 

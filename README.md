@@ -115,8 +115,8 @@ GOOS=windows GOARCH=amd64 go build -o clipall.exe .
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| Wire Protocol | `protocol.go` | 14-byte binary header + payload |
-| Loop Prevention | `loop.go` | xxHash64 ring buffer (32 entries) |
+| Wire Protocol | `protocol.go` | Versioned event metadata + payload |
+| Loop Prevention | `loop.go` | Event-ID ring buffer + targeted echo suppression |
 | Clipboard | `clipboard.go` | Watch/Read/Write text and images (PNG) via native APIs |
 | Networking | `peer.go` | TCP connections with auto-reconnect |
 | Orchestrator | `node.go` | Event loop tying everything together |
@@ -124,7 +124,9 @@ GOOS=windows GOARCH=amd64 go build -o clipall.exe .
 
 ### Loop Prevention
 
-When device A syncs to device B, writing to B's clipboard would trigger B's watcher, creating an infinite loop. Clipall prevents this with a **content-addressed ring buffer**: each synced payload is fingerprinted with xxHash64. When the watcher fires, it checks the fingerprint against the ring buffer and suppresses the echo. A write cooldown provides an additional safety layer.
+When device A syncs to device B, writing to B's clipboard triggers B's watcher and could create an infinite loop. Clipall identifies an event by its **content hash, source node, and timestamp**. This lets a user copy identical content again without that new event being mistaken for an old duplicate. A short-lived, content-specific echo marker suppresses only the clipboard notification caused by a remote write; unrelated copies are never blocked by a global cooldown.
+
+This metadata is carried by wire protocol v2. The decoder accepts v1 messages during upgrades, but all peers should be upgraded because older binaries cannot decode v2 messages.
 
 ## Prerequisites
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 )
 
@@ -9,6 +10,8 @@ func TestEncodeDecodeText(t *testing.T) {
 	original := Message{
 		Type:      TypeText,
 		ContentID: 42,
+		Source:    "macbook",
+		Timestamp: 1720000000123456789,
 		Payload:   []byte("hello clipboard"),
 	}
 
@@ -27,6 +30,12 @@ func TestEncodeDecodeText(t *testing.T) {
 	if decoded.ContentID != 42 {
 		t.Errorf("ContentID = %d, want 42", decoded.ContentID)
 	}
+	if decoded.Source != original.Source {
+		t.Errorf("Source = %q, want %q", decoded.Source, original.Source)
+	}
+	if decoded.Timestamp != original.Timestamp {
+		t.Errorf("Timestamp = %d, want %d", decoded.Timestamp, original.Timestamp)
+	}
 	if !bytes.Equal(decoded.Payload, original.Payload) {
 		t.Errorf("Payload = %q, want %q", decoded.Payload, original.Payload)
 	}
@@ -41,6 +50,8 @@ func TestEncodeDecodeImage(t *testing.T) {
 	original := Message{
 		Type:      TypeImage,
 		ContentID: 99,
+		Source:    "windows-pc",
+		Timestamp: 1720000000123456790,
 		Payload:   payload,
 	}
 
@@ -104,12 +115,12 @@ func TestDecodePayloadTooLarge(t *testing.T) {
 
 	encoded := Encode(msg)
 
-	// Overwrite PayloadLen with a value exceeding MaxPayloadSize.
+	// Overwrite PayloadLen with a value exceeding MaxPayloadSize in the v2 header.
 	// MaxPayloadSize is 10*1024*1024 = 10485760, so use 10485761.
-	encoded[10] = 0x00
-	encoded[11] = 0xA0
-	encoded[12] = 0x00
-	encoded[13] = 0x01
+	encoded[20] = 0x00
+	encoded[21] = 0xA0
+	encoded[22] = 0x00
+	encoded[23] = 0x01
 
 	_, err := Decode(bytes.NewReader(encoded))
 	if err == nil {
@@ -194,5 +205,29 @@ func TestEncodeDecodePreservesContentID(t *testing.T) {
 
 	if decoded.ContentID != contentID {
 		t.Errorf("ContentID = 0x%X, want 0x%X", decoded.ContentID, contentID)
+	}
+}
+
+func TestDecodeLegacyV1Message(t *testing.T) {
+	payload := []byte("from an older peer")
+	encoded := make([]byte, legacyHeaderSize+len(payload))
+	encoded[0] = LegacyProtocolVersion
+	encoded[1] = byte(TypeText)
+	binary.BigEndian.PutUint64(encoded[2:10], 42)
+	binary.BigEndian.PutUint32(encoded[10:14], uint32(len(payload)))
+	copy(encoded[14:], payload)
+
+	decoded, err := Decode(bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatalf("Decode legacy message: %v", err)
+	}
+	if decoded.Version != LegacyProtocolVersion || decoded.ContentID != 42 {
+		t.Fatalf("decoded legacy metadata = %+v", decoded)
+	}
+	if decoded.Source != "" || decoded.Timestamp != 0 {
+		t.Fatalf("legacy message unexpectedly has v2 identity fields: %+v", decoded)
+	}
+	if !bytes.Equal(decoded.Payload, payload) {
+		t.Fatalf("legacy payload = %q, want %q", decoded.Payload, payload)
 	}
 }
