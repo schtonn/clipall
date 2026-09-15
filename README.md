@@ -76,6 +76,8 @@ That's it. Copy on one machine, paste on the other.
 --peers    Comma-separated peer addresses (host:port)
 --listen   Port to listen on (default: 9876)
 --config   Path to config file
+--install-autostart     Start clipall automatically at login
+--uninstall-autostart   Remove automatic startup
 ```
 
 ### Config File (Optional)
@@ -94,6 +96,26 @@ listen:
 ```
 
 Then just run `clipall` with no arguments.
+
+### Start Automatically at Login
+
+After installing clipall, register it with the same peer arguments you normally use:
+
+```bash
+clipall --install-autostart --peers <hostname>:9876
+```
+
+If your peers are already in the default config file, no extra arguments are needed:
+
+```bash
+clipall --install-autostart
+```
+
+This creates a user LaunchAgent on macOS or a current-user startup entry on Windows. No administrator privileges are required. To remove it:
+
+```bash
+clipall --uninstall-autostart
+```
 
 ## Build from Source
 
@@ -120,6 +142,7 @@ GOOS=windows GOARCH=amd64 go build -o clipall.exe .
 | Clipboard | `clipboard.go` | Watch/Read/Write text and images (PNG) via native APIs |
 | Networking | `peer.go` | TCP connections with auto-reconnect |
 | Orchestrator | `node.go` | Event loop tying everything together |
+| Autostart | `autostart_*.go` | LaunchAgent / Windows user startup registration |
 | Config | `config.go` | YAML + CLI flag parsing |
 
 ### Loop Prevention
@@ -138,7 +161,7 @@ This metadata is carried by wire protocol v2. The decoder accepts v1 messages du
 
 - [x] Image clipboard sync (PNG)
 - [ ] System tray icon with connection status
-- [ ] Auto-start (launchd / Task Scheduler)
+- [x] Auto-start (LaunchAgent / Windows Run key)
 - [ ] Clipboard history
 
 ## License

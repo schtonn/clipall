@@ -75,3 +75,4 @@ fi
 
 info "Installed ${BINARY} ${TAG} to ${INSTALL_DIR}/${BINARY}"
 printf "\n  Run: %s --peers <hostname>:9876\n\n" "$BINARY"
+printf "  Enable autostart: %s --install-autostart --peers <hostname>:9876\n\n" "$BINARY"
