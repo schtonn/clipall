@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="MrDuan-DLy/clipall"
+REPO="schtonn/clipall"
 INSTALL_DIR="/usr/local/bin"
 BINARY="clipall"
 

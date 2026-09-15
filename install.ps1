@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$Repo = "MrDuan-DLy/clipall"
+$Repo = "schtonn/clipall"
 $Binary = "clipall.exe"
 $InstallDir = "$env:LOCALAPPDATA\clipall"
 
@@ -31,7 +31,29 @@ if (-not (Test-Path $InstallDir)) {
 
 $OutPath = Join-Path $InstallDir $Binary
 Write-Host "==> Downloading $Url..." -ForegroundColor Cyan
-Invoke-WebRequest -Uri $Url -OutFile $OutPath -UseBasicParsing
+$TempPath = Join-Path ([System.IO.Path]::GetTempPath()) ("clipall-" + [guid]::NewGuid().ToString() + ".exe")
+
+try {
+    # Keep the installed binary intact if the download fails.
+    Invoke-WebRequest -Uri $Url -OutFile $TempPath -UseBasicParsing
+
+    # Windows does not allow replacing a running executable. Stop only clipall
+    # instances launched from this install directory before the atomic update.
+    $Running = Get-Process clipall -ErrorAction SilentlyContinue | Where-Object {
+        try { $_.Path -eq $OutPath } catch { $false }
+    }
+    if ($Running) {
+        Write-Host "==> Stopping the installed clipall process..." -ForegroundColor Cyan
+        $Running | Stop-Process -Force
+        $Running | Wait-Process -ErrorAction SilentlyContinue
+    }
+
+    Move-Item -Path $TempPath -Destination $OutPath -Force
+} finally {
+    if (Test-Path $TempPath) {
+        Remove-Item $TempPath -Force
+    }
+}
 
 # Add to PATH if not already present.
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")

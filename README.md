@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="https://img.shields.io/github/v/release/MrDuan-DLy/clipall?style=flat-square&color=blue" alt="Release">
-  <img src="https://img.shields.io/github/actions/workflow/status/MrDuan-DLy/clipall/ci.yml?style=flat-square&label=CI" alt="CI">
+  <img src="https://img.shields.io/github/v/release/schtonn/clipall?style=flat-square&color=blue" alt="Release">
+  <img src="https://img.shields.io/github/actions/workflow/status/schtonn/clipall/ci.yml?style=flat-square&label=CI" alt="CI">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey?style=flat-square" alt="Platform">
-  <img src="https://img.shields.io/github/license/MrDuan-DLy/clipall?style=flat-square" alt="License">
+  <img src="https://img.shields.io/github/license/schtonn/clipall?style=flat-square" alt="License">
 </p>
 
 <h1 align="center">clipall</h1>
@@ -39,16 +39,16 @@ Each device runs a lightweight daemon that watches the local clipboard. When you
 **macOS / Linux:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MrDuan-DLy/clipall/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/schtonn/clipall/main/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/MrDuan-DLy/clipall/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/schtonn/clipall/main/install.ps1 | iex
 ```
 
-Or download binaries manually from [Releases](https://github.com/MrDuan-DLy/clipall/releases).
+Or download binaries manually from [Releases](https://github.com/schtonn/clipall/releases).
 
 ### Run
 
@@ -100,7 +100,7 @@ Then just run `clipall` with no arguments.
 Requires [Go](https://go.dev/dl/) 1.22+.
 
 ```bash
-git clone https://github.com/MrDuan-DLy/clipall.git
+git clone https://github.com/schtonn/clipall.git
 cd clipall
 go build -o clipall .
 ```
