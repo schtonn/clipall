@@ -10,9 +10,8 @@ import (
 )
 
 type Config struct {
-	Peers    []PeerConfig `yaml:"peers"`
-	Listen   ListenConfig `yaml:"listen"`
-	LogLevel string       `yaml:"log_level"`
+	Peers  []PeerConfig `yaml:"peers"`
+	Listen ListenConfig `yaml:"listen"`
 }
 
 type PeerConfig struct {
@@ -21,13 +20,13 @@ type PeerConfig struct {
 }
 
 type ListenConfig struct {
-	Port int `yaml:"port"`
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"`
 }
 
 func DefaultConfig() Config {
 	return Config{
-		Listen:   ListenConfig{Port: 9876},
-		LogLevel: "info",
+		Listen: ListenConfig{Host: "tailscale", Port: 9876},
 	}
 }
 

@@ -27,11 +27,12 @@ func NewPeer(addr string) *Peer {
 // Run dials the peer and sends messages in a loop. Reconnects on failure.
 // Blocks until ctx is cancelled.
 func (p *Peer) Run(ctx context.Context) {
+	var pending *Message
 	for {
 		if err := p.connect(ctx); err != nil {
 			return // context cancelled
 		}
-		p.writeLoop(ctx)
+		pending = p.writeLoop(ctx, pending)
 		// writeLoop returned means connection lost, retry
 		p.mu.Lock()
 		if p.conn != nil {
@@ -80,24 +81,40 @@ func (p *Peer) connect(ctx context.Context) error {
 	}
 }
 
-func (p *Peer) writeLoop(ctx context.Context) {
+// writeLoop returns a message that may not have reached the peer. Run keeps it
+// across reconnects so a connection failure does not silently lose the event.
+func (p *Peer) writeLoop(ctx context.Context, pending *Message) *Message {
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case msg := <-p.sendCh:
-			data := Encode(msg)
-			p.mu.Lock()
-			conn := p.conn
-			p.mu.Unlock()
-			if conn == nil {
-				return
+		var msg Message
+		if pending != nil {
+			msg = *pending
+			pending = nil
+		} else {
+			select {
+			case <-ctx.Done():
+				return nil
+			case msg = <-p.sendCh:
 			}
-			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if _, err := conn.Write(data); err != nil {
-				log.Printf("[peer] write to %s: %v", p.addr, err)
-				return
-			}
+		}
+
+		data, err := Encode(msg)
+		if err != nil {
+			log.Printf("[peer] refusing invalid message for %s: %v", p.addr, err)
+			continue
+		}
+		p.mu.Lock()
+		conn := p.conn
+		p.mu.Unlock()
+		if conn == nil {
+			return &msg
+		}
+		if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			log.Printf("[peer] set write deadline for %s: %v", p.addr, err)
+			return &msg
+		}
+		if _, err := conn.Write(data); err != nil {
+			log.Printf("[peer] write to %s: %v", p.addr, err)
+			return &msg
 		}
 	}
 }

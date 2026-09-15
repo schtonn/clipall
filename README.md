@@ -36,7 +36,7 @@ Each device runs a lightweight daemon that watches the local clipboard. When you
 
 ### Install
 
-**macOS / Linux:**
+**macOS:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/schtonn/clipall/main/install.sh | bash
@@ -74,6 +74,7 @@ That's it. Copy on one machine, paste on the other.
 
 ```
 --peers    Comma-separated peer addresses (host:port)
+--listen-host  Address to listen on (default: tailscale; use * for all interfaces)
 --listen   Port to listen on (default: 9876)
 --config   Path to config file
 --install-autostart     Start clipall automatically at login
@@ -92,6 +93,7 @@ peers:
     port: 9876
 
 listen:
+  host: tailscale
   port: 9876
 ```
 
@@ -119,7 +121,7 @@ clipall --uninstall-autostart
 
 ## Build from Source
 
-Requires [Go](https://go.dev/dl/) 1.22+.
+Requires [Go](https://go.dev/dl/) 1.24+.
 
 ```bash
 git clone https://github.com/schtonn/clipall.git
@@ -156,6 +158,10 @@ This metadata is carried by wire protocol v2. The decoder accepts v1 messages du
 - [Tailscale](https://tailscale.com/download) installed and running on all devices
 - Devices must be on the same Tailnet (verify with `tailscale ping <hostname>`)
 - Port 9876 (default) must be reachable between devices
+
+By default, clipall listens only on a local Tailscale address. If you intentionally
+use another private network, pass `--listen-host <ip>`; `--listen-host '*'` listens
+on all interfaces and should only be used behind a trusted firewall.
 
 ## Roadmap
 

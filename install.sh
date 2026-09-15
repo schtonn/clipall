@@ -14,7 +14,6 @@ ARCH="$(uname -m)"
 
 case "$OS" in
     Darwin) GOOS="darwin" ;;
-    Linux)  GOOS="linux"  ;;
     *)      error "Unsupported OS: $OS" ;;
 esac
 
@@ -36,9 +35,9 @@ if [ -z "$TAG" ]; then
     error "Could not determine latest release"
 fi
 
-# Check if already up to date.
-if command -v "$BINARY" &>/dev/null; then
-    CURRENT="$("$BINARY" --version 2>/dev/null || echo "unknown")"
+# Check the exact path this script installs, rather than another binary on PATH.
+if [ -x "${INSTALL_DIR}/${BINARY}" ]; then
+    CURRENT="$("${INSTALL_DIR}/${BINARY}" --version 2>/dev/null || echo "unknown")"
     if [ "$CURRENT" = "clipall ${TAG}" ]; then
         info "Already up to date (${TAG})"
         exit 0
@@ -50,6 +49,7 @@ fi
 
 # Download binary.
 URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
+CHECKSUM_URL="https://github.com/${REPO}/releases/download/${TAG}/checksums.txt"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
@@ -57,6 +57,13 @@ info "Downloading ${URL}..."
 if ! curl -fSL --progress-bar -o "${TMPDIR}/${BINARY}" "$URL"; then
     error "Download failed. Check https://github.com/${REPO}/releases for available assets."
 fi
+
+info "Verifying SHA-256 checksum..."
+curl -fsSL -o "${TMPDIR}/checksums.txt" "$CHECKSUM_URL" || error "Could not download checksums.txt"
+EXPECTED="$(awk -v asset="$ASSET" '$2 == asset { print $1 }' "${TMPDIR}/checksums.txt")"
+[ -n "$EXPECTED" ] || error "No checksum found for ${ASSET}"
+ACTUAL="$(shasum -a 256 "${TMPDIR}/${BINARY}" | awk '{ print $1 }')"
+[ "$ACTUAL" = "$EXPECTED" ] || error "Checksum mismatch for ${ASSET}"
 
 chmod +x "${TMPDIR}/${BINARY}"
 

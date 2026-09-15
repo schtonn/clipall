@@ -43,10 +43,13 @@ func (m Message) EventID() EventID {
 
 // Encode serializes a Message to wire format.
 // Always sets Version to ProtocolVersion regardless of the input value.
-func Encode(msg Message) []byte {
+func Encode(msg Message) ([]byte, error) {
 	source := []byte(msg.Source)
 	if len(source) > MaxSourceSize {
-		source = source[:MaxSourceSize]
+		return nil, fmt.Errorf("source too large: %d bytes exceeds max %d", len(source), MaxSourceSize)
+	}
+	if len(msg.Payload) > MaxPayloadSize {
+		return nil, fmt.Errorf("payload too large: %d bytes exceeds max %d", len(msg.Payload), MaxPayloadSize)
 	}
 	payloadLen := uint32(len(msg.Payload))
 	buf := make([]byte, headerSize+len(source)+int(payloadLen))
@@ -60,7 +63,7 @@ func Encode(msg Message) []byte {
 	copy(buf[24:], source)
 	copy(buf[24+len(source):], msg.Payload)
 
-	return buf
+	return buf, nil
 }
 
 // Decode reads a single Message from r.

@@ -9,10 +9,11 @@ $Release = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest
 $Tag = $Release.tag_name
 Write-Host "==> Latest release: $Tag" -ForegroundColor Cyan
 
-# Check if already up to date.
-$ExistingBin = Get-Command clipall -ErrorAction SilentlyContinue
-if ($ExistingBin) {
-    $Current = & clipall --version 2>$null
+$OutPath = Join-Path $InstallDir $Binary
+
+# Check the exact path this script installs, rather than another binary on PATH.
+if (Test-Path $OutPath) {
+    $Current = & $OutPath --version 2>$null
     if ($Current -eq "clipall $Tag") {
         Write-Host "==> Already up to date ($Tag)" -ForegroundColor Green
         exit 0
@@ -24,18 +25,31 @@ if ($ExistingBin) {
 
 $Asset = "clipall-windows-amd64.exe"
 $Url = "https://github.com/$Repo/releases/download/$Tag/$Asset"
+$ChecksumUrl = "https://github.com/$Repo/releases/download/$Tag/checksums.txt"
 
 if (-not (Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir | Out-Null
 }
 
-$OutPath = Join-Path $InstallDir $Binary
 Write-Host "==> Downloading $Url..." -ForegroundColor Cyan
 $TempPath = Join-Path ([System.IO.Path]::GetTempPath()) ("clipall-" + [guid]::NewGuid().ToString() + ".exe")
+$ChecksumPath = Join-Path ([System.IO.Path]::GetTempPath()) ("clipall-checksums-" + [guid]::NewGuid().ToString() + ".txt")
 
 try {
     # Keep the installed binary intact if the download fails.
     Invoke-WebRequest -Uri $Url -OutFile $TempPath -UseBasicParsing
+    Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath -UseBasicParsing
+
+    Write-Host "==> Verifying SHA-256 checksum..." -ForegroundColor Cyan
+    $ChecksumLine = Get-Content $ChecksumPath | Where-Object { $_ -match "^([0-9a-fA-F]{64})\s+$([regex]::Escape($Asset))$" } | Select-Object -First 1
+    if (-not $ChecksumLine) {
+        throw "No checksum found for $Asset"
+    }
+    $Expected = ($ChecksumLine -split '\s+')[0].ToLowerInvariant()
+    $Actual = (Get-FileHash -Path $TempPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($Actual -ne $Expected) {
+        throw "Checksum mismatch for $Asset"
+    }
 
     # Windows does not allow replacing a running executable. Stop only clipall
     # instances launched from this install directory before the atomic update.
@@ -52,6 +66,9 @@ try {
 } finally {
     if (Test-Path $TempPath) {
         Remove-Item $TempPath -Force
+    }
+    if (Test-Path $ChecksumPath) {
+        Remove-Item $ChecksumPath -Force
     }
 }
 

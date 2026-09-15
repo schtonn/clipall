@@ -6,6 +6,15 @@ import (
 	"testing"
 )
 
+func mustEncode(t *testing.T, msg Message) []byte {
+	t.Helper()
+	encoded, err := Encode(msg)
+	if err != nil {
+		t.Fatalf("Encode failed: %v", err)
+	}
+	return encoded
+}
+
 func TestEncodeDecodeText(t *testing.T) {
 	original := Message{
 		Type:      TypeText,
@@ -15,7 +24,7 @@ func TestEncodeDecodeText(t *testing.T) {
 		Payload:   []byte("hello clipboard"),
 	}
 
-	encoded := Encode(original)
+	encoded := mustEncode(t, original)
 	decoded, err := Decode(bytes.NewReader(encoded))
 	if err != nil {
 		t.Fatalf("Decode failed: %v", err)
@@ -55,7 +64,7 @@ func TestEncodeDecodeImage(t *testing.T) {
 		Payload:   payload,
 	}
 
-	encoded := Encode(original)
+	encoded := mustEncode(t, original)
 	decoded, err := Decode(bytes.NewReader(encoded))
 	if err != nil {
 		t.Fatalf("Decode failed: %v", err)
@@ -76,7 +85,7 @@ func TestEncodeDecodeEmptyPayload(t *testing.T) {
 		Payload:   []byte{},
 	}
 
-	encoded := Encode(original)
+	encoded := mustEncode(t, original)
 	decoded, err := Decode(bytes.NewReader(encoded))
 	if err != nil {
 		t.Fatalf("Decode failed: %v", err)
@@ -97,7 +106,7 @@ func TestDecodeVersionMismatch(t *testing.T) {
 		Payload:   []byte("test"),
 	}
 
-	encoded := Encode(msg)
+	encoded := mustEncode(t, msg)
 	encoded[0] = 99 // corrupt version byte
 
 	_, err := Decode(bytes.NewReader(encoded))
@@ -113,7 +122,7 @@ func TestDecodePayloadTooLarge(t *testing.T) {
 		Payload:   []byte("small"),
 	}
 
-	encoded := Encode(msg)
+	encoded := mustEncode(t, msg)
 
 	// Overwrite PayloadLen with a value exceeding MaxPayloadSize in the v2 header.
 	// MaxPayloadSize is 10*1024*1024 = 10485760, so use 10485761.
@@ -147,8 +156,8 @@ func TestDecodeSequentialMessages(t *testing.T) {
 	// Concatenate both encoded messages into a single buffer, as a TCP
 	// connection would deliver them.
 	var buf bytes.Buffer
-	buf.Write(Encode(textMsg))
-	buf.Write(Encode(imgMsg))
+	buf.Write(mustEncode(t, textMsg))
+	buf.Write(mustEncode(t, imgMsg))
 
 	// Decode the first message.
 	got1, err := Decode(&buf)
@@ -197,7 +206,7 @@ func TestEncodeDecodePreservesContentID(t *testing.T) {
 		Payload:   []byte("id test"),
 	}
 
-	encoded := Encode(original)
+	encoded := mustEncode(t, original)
 	decoded, err := Decode(bytes.NewReader(encoded))
 	if err != nil {
 		t.Fatalf("Decode failed: %v", err)
@@ -205,6 +214,20 @@ func TestEncodeDecodePreservesContentID(t *testing.T) {
 
 	if decoded.ContentID != contentID {
 		t.Errorf("ContentID = 0x%X, want 0x%X", decoded.ContentID, contentID)
+	}
+}
+
+func TestEncodeRejectsOversizedPayload(t *testing.T) {
+	_, err := Encode(Message{Type: TypeText, Payload: make([]byte, MaxPayloadSize+1)})
+	if err == nil {
+		t.Fatal("expected Encode to reject oversized payload")
+	}
+}
+
+func TestEncodeRejectsOversizedSource(t *testing.T) {
+	_, err := Encode(Message{Type: TypeText, Source: string(make([]byte, MaxSourceSize+1))})
+	if err == nil {
+		t.Fatal("expected Encode to reject oversized source")
 	}
 }
 

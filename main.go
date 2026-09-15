@@ -16,6 +16,7 @@ var version = "dev"
 
 func main() {
 	peers := flag.String("peers", "", "comma-separated peer addresses (host:port)")
+	listenHost := flag.String("listen-host", "tailscale", "address to listen on (tailscale, an IP, or * for all interfaces)")
 	listen := flag.Int("listen", 9876, "port to listen on")
 	configFile := flag.String("config", "", "path to config file (default: auto-detect)")
 	imageDir := flag.String("save-images-to", "", "save incoming images to this directory (e.g. /tmp/clipall)")
@@ -24,6 +25,17 @@ func main() {
 	uninstallAutostartFlag := flag.Bool("uninstall-autostart", false, "remove clipall automatic startup")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+	setFlags := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
+
+	if *listen < 1 || *listen > 65535 {
+		fmt.Fprintf(os.Stderr, "error: listen port must be between 1 and 65535 (got %d)\n", *listen)
+		os.Exit(1)
+	}
+	if *imageMaxMB < 0 {
+		fmt.Fprintf(os.Stderr, "error: image-max-size must not be negative (got %d)\n", *imageMaxMB)
+		os.Exit(1)
+	}
 
 	if *showVersion {
 		fmt.Printf("clipall %s\n", version)
@@ -39,7 +51,17 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error: find executable: %v\n", err)
 			os.Exit(1)
 		}
-		args := buildAutostartArgs(*peers, *listen, *configFile, *imageDir, *imageMaxMB)
+		args := buildAutostartArgs(autostartOptions{
+			peers:         *peers,
+			listenHost:    *listenHost,
+			listenHostSet: setFlags["listen-host"],
+			listenPort:    *listen,
+			listenPortSet: setFlags["listen"],
+			configFile:    *configFile,
+			imageDir:      *imageDir,
+			imageMaxMB:    *imageMaxMB,
+			imageMaxSet:   setFlags["image-max-size"],
+		})
 		if err := installAutostart(executable, args); err != nil {
 			fmt.Fprintf(os.Stderr, "error: install autostart: %v\n", err)
 			os.Exit(1)
@@ -82,8 +104,15 @@ func main() {
 	}
 
 	// CLI flags override config file.
-	if *listen != 9876 {
+	if setFlags["listen-host"] {
+		cfg.Listen.Host = *listenHost
+	}
+	if setFlags["listen"] {
 		cfg.Listen.Port = *listen
+	}
+	if cfg.Listen.Port < 1 || cfg.Listen.Port > 65535 {
+		fmt.Fprintf(os.Stderr, "error: listen port must be between 1 and 65535 (got %d)\n", cfg.Listen.Port)
+		os.Exit(1)
 	}
 
 	// Build peer address list.
@@ -107,15 +136,15 @@ func main() {
 	}
 
 	if *imageDir != "" {
-		log.Printf("[main] clipall starting, peers: %v, listen: :%d, images: %s", peerAddrs, cfg.Listen.Port, *imageDir)
+		log.Printf("[main] clipall starting, peers: %v, listen: %s:%d, images: %s", peerAddrs, cfg.Listen.Host, cfg.Listen.Port, *imageDir)
 	} else {
-		log.Printf("[main] clipall starting, peers: %v, listen: :%d", peerAddrs, cfg.Listen.Port)
+		log.Printf("[main] clipall starting, peers: %v, listen: %s:%d", peerAddrs, cfg.Listen.Host, cfg.Listen.Port)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	node := NewNode(cfg.Listen.Port, peerAddrs, *imageDir, *imageMaxMB)
+	node := NewNodeAt(cfg.Listen.Host, cfg.Listen.Port, peerAddrs, *imageDir, *imageMaxMB)
 	if err := node.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
