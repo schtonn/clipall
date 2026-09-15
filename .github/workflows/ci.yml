@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "feature/**"]
   pull_request:
     branches: [main]
 
@@ -49,6 +49,12 @@ jobs:
           CGO_ENABLED: "1"
         run: go build -o clipall-${{ matrix.goos }}-${{ matrix.goarch }} .
 
+      - name: Upload test binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipall-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: clipall-${{ matrix.goos }}-${{ matrix.goarch }}
+
   build-windows:
     needs: test
     runs-on: windows-latest
@@ -61,3 +67,9 @@ jobs:
 
       - name: Build
         run: go build -o clipall-windows-amd64.exe .
+
+      - name: Upload test binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipall-windows-amd64
+          path: clipall-windows-amd64.exe

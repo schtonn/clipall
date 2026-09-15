@@ -22,6 +22,7 @@ func TestBuildAutostartArgsPreservesRuntimeConfiguration(t *testing.T) {
 		imageDir:      "/tmp/images",
 		imageMaxMB:    250,
 		imageMaxSet:   true,
+		filesEnabled:  true,
 	})
 	want := []string{
 		"--peers", "mac:9876,windows:9876",
@@ -30,6 +31,7 @@ func TestBuildAutostartArgsPreservesRuntimeConfiguration(t *testing.T) {
 		"--config", "/tmp/config file.yaml",
 		"--save-images-to", "/tmp/images",
 		"--image-max-size", "250",
+		"--files",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("args = %q, want %q", got, want)

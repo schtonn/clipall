@@ -21,6 +21,7 @@ func main() {
 	configFile := flag.String("config", "", "path to config file (default: auto-detect)")
 	imageDir := flag.String("save-images-to", "", "save incoming images to this directory (e.g. /tmp/clipall)")
 	imageMaxMB := flag.Int("image-max-size", 100, "max total size of saved images in MB (0 = unlimited)")
+	filesEnabled := flag.Bool("files", false, "enable experimental on-demand file copy and paste")
 	installAutostartFlag := flag.Bool("install-autostart", false, "start clipall automatically when you log in")
 	uninstallAutostartFlag := flag.Bool("uninstall-autostart", false, "remove clipall automatic startup")
 	showVersion := flag.Bool("version", false, "print version and exit")
@@ -61,6 +62,7 @@ func main() {
 			imageDir:      *imageDir,
 			imageMaxMB:    *imageMaxMB,
 			imageMaxSet:   setFlags["image-max-size"],
+			filesEnabled:  *filesEnabled,
 		})
 		if err := installAutostart(executable, args); err != nil {
 			fmt.Fprintf(os.Stderr, "error: install autostart: %v\n", err)
@@ -145,6 +147,7 @@ func main() {
 	defer cancel()
 
 	node := NewNodeAt(cfg.Listen.Host, cfg.Listen.Port, peerAddrs, *imageDir, *imageMaxMB)
+	node.filesEnabled = *filesEnabled
 	if err := node.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

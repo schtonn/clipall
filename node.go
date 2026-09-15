@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,16 +17,20 @@ import (
 )
 
 type Node struct {
-	listenHost  string
-	listenPort  int
-	peers       []*Peer
-	incoming    chan Message
-	ring        RingBuffer
-	echoes      EchoBuffer
-	source      string
-	lastEventTS int64
-	imageDir    string // if set, save incoming images to this directory
-	imageMaxMB  int    // max total size of saved images in MB (0 = unlimited)
+	listenHost   string
+	listenPort   int
+	peers        []*Peer
+	incoming     chan Message
+	ring         RingBuffer
+	echoes       EchoBuffer
+	source       string
+	lastEventTS  int64
+	imageDir     string // if set, save incoming images to this directory
+	imageMaxMB   int    // max total size of saved images in MB (0 = unlimited)
+	filesEnabled bool
+	fileAddress  string
+	fileProvider FileProvider
+	fileOffers   chan FileOffer
 }
 
 func NewNode(listenPort int, peerAddrs []string, imageDir string, imageMaxMB int) *Node {
@@ -43,6 +49,7 @@ func NewNodeAt(listenHost string, listenPort int, peerAddrs []string, imageDir s
 		source:     source,
 		imageDir:   imageDir,
 		imageMaxMB: imageMaxMB,
+		fileOffers: make(chan FileOffer, 1),
 	}
 	for _, addr := range peerAddrs {
 		n.peers = append(n.peers, NewPeer(addr))
@@ -84,6 +91,18 @@ func (n *Node) Run(ctx context.Context) error {
 	}
 	defer listener.Close()
 	log.Printf("[node] listening on %s", listener.Addr())
+	var fileCh <-chan []string
+	if n.filesEnabled {
+		host, _, splitErr := net.SplitHostPort(listener.Addr().String())
+		ip, parseErr := netip.ParseAddr(strings.Trim(host, "[]"))
+		if splitErr != nil || parseErr != nil || !isTailscaleAddr(ip) {
+			return fmt.Errorf("file sync requires listening on a Tailscale address")
+		}
+		n.fileAddress = listener.Addr().String()
+		fileCh = watchFiles(ctx)
+		go runFilePasteHandler(ctx, n.fileOffers)
+		log.Printf("[files] experimental on-demand file sync enabled")
+	}
 
 	// Accept incoming connections (peers dialing us).
 	go n.acceptLoop(ctx, listener)
@@ -111,6 +130,9 @@ func (n *Node) Run(ctx context.Context) error {
 			if len(data) == 0 {
 				continue
 			}
+			if n.filesEnabled && clipboardContainsFiles() {
+				continue
+			}
 			id := xxhash.Sum64(data)
 			if event, ok := n.echoes.Consume(TypeText, id, time.Now()); ok {
 				log.Printf("[node] ignoring expected clipboard echo from %q at %d",
@@ -118,6 +140,7 @@ func (n *Node) Run(ctx context.Context) error {
 				continue
 			}
 			msg := n.newMessage(TypeText, data)
+			n.fileProvider.Clear()
 			n.ring.Add(msg.EventID())
 			for _, p := range n.peers {
 				p.Send(msg)
@@ -128,6 +151,9 @@ func (n *Node) Run(ctx context.Context) error {
 			if len(data) == 0 {
 				continue
 			}
+			if n.filesEnabled && clipboardContainsFiles() {
+				continue
+			}
 			id := xxhash.Sum64(data)
 			if event, ok := n.echoes.Consume(TypeImage, id, time.Now()); ok {
 				log.Printf("[node] ignoring expected image echo from %q at %d",
@@ -135,11 +161,41 @@ func (n *Node) Run(ctx context.Context) error {
 				continue
 			}
 			msg := n.newMessage(TypeImage, data)
+			n.fileProvider.Clear()
 			n.ring.Add(msg.EventID())
 			for _, p := range n.peers {
 				p.Send(msg)
 			}
 			log.Printf("[node] sent image (%d bytes) to %d peer(s)", len(data), len(n.peers))
+
+		case paths, ok := <-fileCh:
+			if !ok {
+				fileCh = nil
+				continue
+			}
+			if len(paths) == 0 {
+				n.fileProvider.Clear()
+				continue
+			}
+			offer, err := n.fileProvider.Create(paths, n.fileAddress)
+			if err != nil {
+				log.Printf("[files] cannot offer copied selection: %v", err)
+				continue
+			}
+			payload, err := json.Marshal(offer)
+			if err != nil || len(payload) > MaxPayloadSize {
+				n.fileProvider.Clear()
+				log.Printf("[files] file selection metadata is too large")
+				continue
+			}
+			msg := n.newMessage(TypeFileOffer, payload)
+			n.ring.Add(msg.EventID())
+			for _, p := range n.peers {
+				p.Send(msg)
+			}
+			files, directories, bytes := fileOfferStats(offer)
+			log.Printf("[files] offered %d file(s), %d folder(s), %d bytes to %d peer(s); contents remain local until paste",
+				files, directories, bytes, len(n.peers))
 
 		case msg := <-n.incoming:
 			event := msg.EventID()
@@ -154,6 +210,7 @@ func (n *Node) Run(ctx context.Context) error {
 					log.Printf("[node] failed to write incoming text from %q: %v", msg.Source, err)
 					continue
 				}
+				n.fileProvider.Clear()
 				n.ring.Add(event)
 				// Verify: read back and check if clipboard matches what we wrote.
 				readback := readText()
@@ -172,6 +229,7 @@ func (n *Node) Run(ctx context.Context) error {
 					log.Printf("[node] failed to write incoming image from %q: %v", msg.Source, err)
 					continue
 				}
+				n.fileProvider.Clear()
 				n.ring.Add(event)
 				// Image readback will differ cross-platform (PNG→DIB→PNG re-encoding
 				// on Windows produces different bytes). Track that exact readback as
@@ -192,6 +250,24 @@ func (n *Node) Run(ctx context.Context) error {
 						log.Printf("[node] saved image to %s", path)
 					}
 				}
+			case TypeFileOffer:
+				if !n.filesEnabled {
+					continue
+				}
+				var offer FileOffer
+				if err := json.Unmarshal(msg.Payload, &offer); err != nil || validateFileOffer(offer) != nil {
+					log.Printf("[files] rejected invalid file offer from %q", msg.Source)
+					continue
+				}
+				n.ring.Add(event)
+				select {
+				case <-n.fileOffers:
+				default:
+				}
+				n.fileOffers <- offer
+				files, directories, bytes := fileOfferStats(offer)
+				log.Printf("[files] received lazy offer from %q: %d file(s), %d folder(s), %d bytes",
+					msg.Source, files, directories, bytes)
 			default:
 				log.Printf("[node] ignoring message type 0x%02x", msg.Type)
 			}
@@ -255,6 +331,14 @@ func (n *Node) handleConn(ctx context.Context, conn net.Conn) {
 				return
 			}
 			log.Printf("[node] connection from %s closed: %v", conn.RemoteAddr(), err)
+			return
+		}
+		if msg.Type == TypeFileFetch {
+			if n.filesEnabled {
+				n.fileProvider.Serve(conn, msg.Payload)
+			} else {
+				_ = writeFileFetchHeader(conn, fileFetchError, 0)
+			}
 			return
 		}
 		select {

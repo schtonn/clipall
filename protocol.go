@@ -14,10 +14,12 @@ const (
 type MessageType byte
 
 const (
-	TypeText  MessageType = 0x01
-	TypeImage MessageType = 0x02
-	TypePing  MessageType = 0x03
-	TypePong  MessageType = 0x04
+	TypeText      MessageType = 0x01
+	TypeImage     MessageType = 0x02
+	TypePing      MessageType = 0x03
+	TypePong      MessageType = 0x04
+	TypeFileOffer MessageType = 0x05
+	TypeFileFetch MessageType = 0x06
 )
 
 const MaxPayloadSize = 10 * 1024 * 1024 // 10MB
@@ -82,7 +84,7 @@ func Decode(r io.Reader) (Message, error) {
 
 	msgType := MessageType(prefix[1])
 	switch msgType {
-	case TypeText, TypeImage, TypePing, TypePong:
+	case TypeText, TypeImage, TypePing, TypePong, TypeFileOffer, TypeFileFetch:
 	default:
 		return Message{}, fmt.Errorf("unknown message type: 0x%02x", msgType)
 	}

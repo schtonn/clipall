@@ -77,6 +77,7 @@ That's it. Copy on one machine, paste on the other.
 --listen-host  Address to listen on (default: tailscale; use * for all interfaces)
 --listen   Port to listen on (default: 9876)
 --config   Path to config file
+--files    Enable experimental on-demand file copy/paste (Windows destination)
 --install-autostart     Start clipall automatically at login
 --uninstall-autostart   Remove automatic startup
 ```
@@ -98,6 +99,23 @@ listen:
 ```
 
 Then just run `clipall` with no arguments.
+
+### Experimental On-Demand File Paste
+
+Enable the prototype on both devices:
+
+```bash
+clipall --files --peers <hostname>:9876
+```
+
+macOS and Windows can currently be file sources; Windows Explorer is the
+supported destination. Copying sends metadata only. The file contents remain
+on the source until you press `Ctrl+V` on Windows, then clipall downloads them
+to a private staging directory and continues the paste. Context-menu Paste is
+not intercepted by this prototype.
+
+Folders are supported up to 4,096 total entries. Symbolic links and special
+files are rejected. Both devices must run a version that supports `--files`.
 
 ### Start Automatically at Login
 
@@ -143,6 +161,7 @@ GOOS=windows GOARCH=amd64 go build -o clipall.exe .
 | Loop Prevention | `loop.go` | Event-ID ring buffer + targeted echo suppression |
 | Clipboard | `clipboard.go` | Watch/Read/Write text and images (PNG) via native APIs |
 | Networking | `peer.go` | TCP connections with auto-reconnect |
+| On-demand files | `file_sync.go`, `clipboard_files_*.go` | Lazy file offers, transfer, and native clipboard integration |
 | Orchestrator | `node.go` | Event loop tying everything together |
 | Autostart | `autostart_*.go` | LaunchAgent / Windows user startup registration |
 | Config | `config.go` | YAML + CLI flag parsing |
