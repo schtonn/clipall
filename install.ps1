@@ -10,6 +10,7 @@ $Tag = $Release.tag_name
 Write-Host "==> Latest release: $Tag" -ForegroundColor Cyan
 
 $OutPath = Join-Path $InstallDir $Binary
+$RestartScheduledTask = $false
 
 # Check the exact path this script installs, rather than another binary on PATH.
 if (Test-Path $OutPath) {
@@ -51,6 +52,14 @@ try {
         throw "Checksum mismatch for $Asset"
     }
 
+    # Pause the managed task so its restart policy cannot race the update.
+    $ScheduledTask = Get-ScheduledTask -TaskName "clipall" -ErrorAction SilentlyContinue
+    if ($ScheduledTask -and $ScheduledTask.State -eq "Running") {
+        Write-Host "==> Stopping the clipall scheduled task..." -ForegroundColor Cyan
+        Stop-ScheduledTask -TaskName "clipall"
+        $RestartScheduledTask = $true
+    }
+
     # Windows does not allow replacing a running executable. Stop only clipall
     # instances launched from this install directory before the atomic update.
     $Running = Get-Process clipall -ErrorAction SilentlyContinue | Where-Object {
@@ -69,6 +78,9 @@ try {
     }
     if (Test-Path $ChecksumPath) {
         Remove-Item $ChecksumPath -Force
+    }
+    if ($RestartScheduledTask) {
+        Start-ScheduledTask -TaskName "clipall"
     }
 }
 

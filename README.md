@@ -129,7 +129,12 @@ If your peers are already in the default config file, no extra arguments are nee
 clipall --install-autostart
 ```
 
-This creates a user LaunchAgent on macOS or a current-user startup entry on Windows. No administrator privileges are required. To remove it:
+This creates a user LaunchAgent on macOS or a current-user scheduled task on
+Windows. No administrator privileges are required. Both restart clipall after
+an unexpected exit. Windows retries after one minute, prevents duplicate task
+instances, and writes a rotating log to
+`%LOCALAPPDATA%\clipall\clipall.log`. Reinstalling autostart replaces the old
+task and its arguments. To remove it:
 
 ```bash
 clipall --uninstall-autostart
@@ -184,7 +189,7 @@ on all interfaces and should only be used behind a trusted firewall.
 
 - [x] Image clipboard sync (PNG)
 - [ ] System tray icon with connection status
-- [x] Auto-start (LaunchAgent / Windows Run key)
+- [x] Auto-start with restart-on-failure (LaunchAgent / Windows Task Scheduler)
 - [ ] Clipboard history
 
 ## License

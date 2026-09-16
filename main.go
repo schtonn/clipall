@@ -22,7 +22,7 @@ func main() {
 	imageDir := flag.String("save-images-to", "", "save incoming images to this directory (e.g. /tmp/clipall)")
 	imageMaxMB := flag.Int("image-max-size", 100, "max total size of saved images in MB (0 = unlimited)")
 	filesEnabled := flag.Bool("files", true, "enable on-demand file copy and paste (use --files=false to disable)")
-	installAutostartFlag := flag.Bool("install-autostart", false, "start clipall automatically when you log in")
+	installAutostartFlag := flag.Bool("install-autostart", false, "start clipall now and automatically when you log in")
 	uninstallAutostartFlag := flag.Bool("uninstall-autostart", false, "remove clipall automatic startup")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -69,7 +69,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error: install autostart: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("clipall autostart installed for %s\n", executable)
+		if err := startAutostartNow(executable, args); err != nil {
+			fmt.Fprintf(os.Stderr, "error: start clipall in background: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("clipall autostart installed and running in the background for %s\n", executable)
 		return
 	}
 	if *uninstallAutostartFlag {
