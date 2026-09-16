@@ -38,6 +38,13 @@ type onboardingResult struct {
 
 var discoverPeers = discoverTailscalePeers
 
+// shouldRunOnboarding deliberately does not use the presence of saved peers as
+// a proxy for setup completion. Config files created by older versions already
+// contain peers but have never offered the interactive autostart setup.
+func shouldRunOnboarding(cfg Config, flagCount int, interactive bool) bool {
+	return interactive && flagCount == 0 && !cfg.OnboardingComplete
+}
+
 func discoverTailscalePeers(port int) ([]discoveredPeer, error) {
 	output, err := runTailscaleCLI("status", "--json")
 	if err != nil {

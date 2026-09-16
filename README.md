@@ -61,6 +61,8 @@ clipall
 On first run, clipall asks whether it should start automatically in the
 background, discovers all peers from `tailscale status --json`, and asks whether
 to use all of them. The accepted peers are saved to the default config file.
+Existing config files created by older versions receive this prompt once as
+well; completion is recorded separately so later runs do not prompt again.
 Use `--peers host1:9876,host2:9876` whenever you want to override discovery.
 
 That's it. Copy on one machine, paste on the other.

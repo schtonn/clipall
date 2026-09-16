@@ -135,12 +135,7 @@ func main() {
 		peerAddrs = cfg.PeerAddrs()
 	}
 
-	if len(peerAddrs) == 0 && flag.NFlag() == 0 {
-		if !stdinIsInteractive() {
-			fmt.Fprintln(os.Stderr, "error: no peers configured. Use --peers flag or run clipall in an interactive terminal for first-time setup.")
-			fmt.Fprintf(os.Stderr, "  example: clipall --peers windows:9876\n")
-			os.Exit(1)
-		}
+	if shouldRunOnboarding(cfg, flag.NFlag(), stdinIsInteractive()) {
 		setup, err := runOnboarding(os.Stdin, os.Stdout, cfg.Listen.Port)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: first-time setup: %v\n", err)
@@ -156,6 +151,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error: save discovered peers: %v\n", err)
 			os.Exit(1)
 		}
+		cfg.OnboardingComplete = true
 		if err := SaveConfig(cfgPath, cfg); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
@@ -186,7 +182,7 @@ func main() {
 	}
 
 	if len(peerAddrs) == 0 {
-		fmt.Fprintln(os.Stderr, "error: no peers configured. Use --peers flag or config file.")
+		fmt.Fprintln(os.Stderr, "error: no peers configured. Run clipall in an interactive terminal or use --peers/config.")
 		fmt.Fprintf(os.Stderr, "  example: clipall --peers windows:9876\n")
 		fmt.Fprintf(os.Stderr, "  config:  %s\n", DefaultConfigPath())
 		os.Exit(1)

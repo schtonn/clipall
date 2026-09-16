@@ -80,3 +80,13 @@ func TestPromptYesNo(t *testing.T) {
 		}
 	}
 }
+
+func TestCompletedOnboardingDoesNotRepeat(t *testing.T) {
+	cfg := Config{
+		Peers:              []PeerConfig{{Hostname: "desktop", Port: 9876}},
+		OnboardingComplete: true,
+	}
+	if shouldRunOnboarding(cfg, 0, true) {
+		t.Fatal("completed onboarding should not run again")
+	}
+}

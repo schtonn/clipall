@@ -10,8 +10,9 @@ import (
 )
 
 type Config struct {
-	Peers  []PeerConfig `yaml:"peers"`
-	Listen ListenConfig `yaml:"listen"`
+	Peers              []PeerConfig `yaml:"peers"`
+	Listen             ListenConfig `yaml:"listen"`
+	OnboardingComplete bool         `yaml:"onboarding_complete,omitempty"`
 }
 
 type PeerConfig struct {
