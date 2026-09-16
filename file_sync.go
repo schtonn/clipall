@@ -294,6 +294,24 @@ func isTailscaleAddr(ip netip.Addr) bool {
 	return false
 }
 
+func receivedStagingSelection(paths []string) bool {
+	if len(paths) == 0 {
+		return false
+	}
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return false
+	}
+	stagingRoot := filepath.Clean(filepath.Join(cacheDir, "clipall", "files")) + string(filepath.Separator)
+	for _, path := range paths {
+		clean := filepath.Clean(path)
+		if !strings.HasPrefix(strings.ToLower(clean), strings.ToLower(stagingRoot)) {
+			return false
+		}
+	}
+	return true
+}
+
 func receiveFileOffer(ctx context.Context, offer FileOffer) ([]string, error) {
 	if err := validateFileOffer(offer); err != nil {
 		return nil, err

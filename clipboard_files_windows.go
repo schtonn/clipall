@@ -6,8 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -114,21 +112,6 @@ func watchFiles(ctx context.Context) <-chan []string {
 		}
 	}()
 	return ch
-}
-
-func receivedStagingSelection(paths []string) bool {
-	cacheDir, err := os.UserCacheDir()
-	if err != nil {
-		return false
-	}
-	stagingRoot := filepath.Clean(filepath.Join(cacheDir, "clipall", "files")) + string(filepath.Separator)
-	for _, path := range paths {
-		clean := filepath.Clean(path)
-		if !strings.HasPrefix(strings.ToLower(clean), strings.ToLower(stagingRoot)) {
-			return false
-		}
-	}
-	return true
 }
 
 func registeredRemoteFilesFormat() (uintptr, error) {

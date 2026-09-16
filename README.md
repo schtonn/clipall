@@ -77,7 +77,7 @@ That's it. Copy on one machine, paste on the other.
 --listen-host  Address to listen on (default: tailscale; use * for all interfaces)
 --listen   Port to listen on (default: 9876)
 --config   Path to config file
---files    Enable experimental on-demand file copy/paste (Windows destination)
+--files    Enable experimental on-demand file copy/paste (Finder/Explorer destination)
 --install-autostart     Start clipall automatically at login
 --uninstall-autostart   Remove automatic startup
 ```
@@ -108,11 +108,12 @@ Enable the prototype on both devices:
 clipall --files --peers <hostname>:9876
 ```
 
-macOS and Windows can currently be file sources; Windows Explorer is the
-supported destination. Copying sends metadata only. The file contents remain
-on the source until you press `Ctrl+V` on Windows, then clipall downloads them
-to a private staging directory and continues the paste. Context-menu Paste is
-not intercepted by this prototype.
+macOS and Windows can be file sources and paste destinations. Copying sends
+metadata only. The file contents remain on the source until Finder or Windows
+Explorer requests the paste, then clipall downloads them to a private staging
+directory. macOS uses AppKit's lazy pasteboard provider and does not require
+Accessibility or Input Monitoring permission. Windows currently detects
+`Ctrl+V`; context-menu Paste is not intercepted on Windows.
 
 Folders are supported up to 4,096 total entries. Symbolic links and special
 files are rejected. Both devices must run a version that supports `--files`.
