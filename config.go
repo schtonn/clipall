@@ -42,6 +42,20 @@ func LoadConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
+func SaveConfig(path string, cfg Config) error {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("encode config: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	return nil
+}
+
 // DefaultConfigPath returns the platform-specific default config file path.
 func DefaultConfigPath() string {
 	if runtime.GOOS == "windows" {

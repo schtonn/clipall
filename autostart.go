@@ -13,6 +13,7 @@ type autostartOptions struct {
 	imageMaxMB    int
 	imageMaxSet   bool
 	filesEnabled  bool
+	filesSet      bool
 }
 
 // buildAutostartArgs keeps the runtime configuration supplied while
@@ -39,6 +40,8 @@ func buildAutostartArgs(opts autostartOptions) []string {
 	}
 	if opts.filesEnabled {
 		args = append(args, "--files")
+	} else if opts.filesSet {
+		args = append(args, "--files=false")
 	}
 	return args
 }

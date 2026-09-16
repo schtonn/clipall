@@ -52,19 +52,16 @@ Or download binaries manually from [Releases](https://github.com/schtonn/clipall
 
 ### Run
 
-On your Mac:
+Run the same command on each device:
 
 ```bash
-clipall --peers <windows-hostname>:9876
+clipall
 ```
 
-On your Windows machine:
-
-```powershell
-clipall --peers <mac-hostname>:9876
-```
-
-Replace `<windows-hostname>` and `<mac-hostname>` with the Tailscale hostnames of your devices (check with `tailscale status`).
+On first run, clipall asks whether it should start automatically in the
+background, discovers all peers from `tailscale status --json`, and asks whether
+to use all of them. The accepted peers are saved to the default config file.
+Use `--peers host1:9876,host2:9876` whenever you want to override discovery.
 
 That's it. Copy on one machine, paste on the other.
 
@@ -77,7 +74,7 @@ That's it. Copy on one machine, paste on the other.
 --listen-host  Address to listen on (default: tailscale; use * for all interfaces)
 --listen   Port to listen on (default: 9876)
 --config   Path to config file
---files    Enable experimental on-demand file copy/paste (Finder/Explorer destination)
+--files    Enable on-demand file copy/paste (default: true; use --files=false to disable)
 --install-autostart     Start clipall automatically at login
 --uninstall-autostart   Remove automatic startup
 ```

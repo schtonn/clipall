@@ -21,7 +21,7 @@ func main() {
 	configFile := flag.String("config", "", "path to config file (default: auto-detect)")
 	imageDir := flag.String("save-images-to", "", "save incoming images to this directory (e.g. /tmp/clipall)")
 	imageMaxMB := flag.Int("image-max-size", 100, "max total size of saved images in MB (0 = unlimited)")
-	filesEnabled := flag.Bool("files", false, "enable experimental on-demand file copy and paste")
+	filesEnabled := flag.Bool("files", true, "enable on-demand file copy and paste (use --files=false to disable)")
 	installAutostartFlag := flag.Bool("install-autostart", false, "start clipall automatically when you log in")
 	uninstallAutostartFlag := flag.Bool("uninstall-autostart", false, "remove clipall automatic startup")
 	showVersion := flag.Bool("version", false, "print version and exit")
@@ -63,6 +63,7 @@ func main() {
 			imageMaxMB:    *imageMaxMB,
 			imageMaxSet:   setFlags["image-max-size"],
 			filesEnabled:  *filesEnabled,
+			filesSet:      setFlags["files"],
 		})
 		if err := installAutostart(executable, args); err != nil {
 			fmt.Fprintf(os.Stderr, "error: install autostart: %v\n", err)
@@ -128,6 +129,56 @@ func main() {
 		}
 	} else {
 		peerAddrs = cfg.PeerAddrs()
+	}
+
+	if len(peerAddrs) == 0 && flag.NFlag() == 0 {
+		if !stdinIsInteractive() {
+			fmt.Fprintln(os.Stderr, "error: no peers configured. Use --peers flag or run clipall in an interactive terminal for first-time setup.")
+			fmt.Fprintf(os.Stderr, "  example: clipall --peers windows:9876\n")
+			os.Exit(1)
+		}
+		setup, err := runOnboarding(os.Stdin, os.Stdout, cfg.Listen.Port)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: first-time setup: %v\n", err)
+			os.Exit(1)
+		}
+		if !setup.Accepted {
+			fmt.Println("No peers selected. Run clipall again with --peers host1:9876,host2:9876.")
+			return
+		}
+		peerAddrs = setup.PeerAddrs
+		cfg.Peers, err = peerConfigsFromAddrs(peerAddrs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: save discovered peers: %v\n", err)
+			os.Exit(1)
+		}
+		if err := SaveConfig(cfgPath, cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Saved %d peer(s) to %s\n", len(peerAddrs), cfgPath)
+
+		if setup.InstallAutostart {
+			executable, err := os.Executable()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: find executable: %v\n", err)
+				os.Exit(1)
+			}
+			args := buildAutostartArgs(autostartOptions{
+				peers:        strings.Join(peerAddrs, ","),
+				filesEnabled: *filesEnabled,
+			})
+			if err := installAutostart(executable, args); err != nil {
+				fmt.Fprintf(os.Stderr, "error: install autostart: %v\n", err)
+				os.Exit(1)
+			}
+			if err := startAutostartNow(executable, args); err != nil {
+				fmt.Fprintf(os.Stderr, "error: start clipall in background: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("clipall autostart installed and running in the background for %s\n", executable)
+			return
+		}
 	}
 
 	if len(peerAddrs) == 0 {

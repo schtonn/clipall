@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"syscall"
 
@@ -52,6 +53,21 @@ func installAutostart(executable string, args []string) error {
 		return fmt.Errorf("set Windows Run value: %w", err)
 	}
 	return nil
+}
+
+func startAutostartNow(executable string, args []string) error {
+	parts := make([]string, 0, len(args)+2)
+	parts = append(parts, "&", powershellLiteral(executable))
+	for _, arg := range args {
+		parts = append(parts, powershellLiteral(arg))
+	}
+	command := exec.Command("powershell.exe",
+		"-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", strings.Join(parts, " "))
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if err := command.Start(); err != nil {
+		return fmt.Errorf("start hidden clipall process: %w", err)
+	}
+	return command.Process.Release()
 }
 
 func uninstallAutostart() error {

@@ -81,5 +81,6 @@ else
 fi
 
 info "Installed ${BINARY} ${TAG} to ${INSTALL_DIR}/${BINARY}"
-printf "\n  Run: %s --peers <hostname>:9876\n\n" "$BINARY"
-printf "  Enable autostart: %s --install-autostart --peers <hostname>:9876\n\n" "$BINARY"
+printf "\n  Run: %s\n" "$BINARY"
+printf "  First run discovers Tailscale peers and offers to enable autostart.\n"
+printf "  Override discovery: %s --peers <hostname>:9876\n\n" "$BINARY"

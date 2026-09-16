@@ -81,7 +81,8 @@ if ($UserPath -notlike "*$InstallDir*") {
 
 Write-Host "==> Installed clipall $Tag to $OutPath" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Run: clipall --peers <hostname>:9876"
-Write-Host "  Enable autostart: clipall --install-autostart --peers <hostname>:9876"
+Write-Host "  Run: clipall"
+Write-Host "  First run discovers Tailscale peers and offers to enable autostart."
+Write-Host "  Override discovery: clipall --peers <hostname>:9876"
 Write-Host ""
 Write-Host "  Restart your terminal for PATH changes to take effect." -ForegroundColor Yellow

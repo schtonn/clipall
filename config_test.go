@@ -19,3 +19,28 @@ func TestLoadConfigKeepsSecureListenDefault(t *testing.T) {
 		t.Fatalf("listen config = %+v", cfg.Listen)
 	}
 }
+
+func TestSaveConfigRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "config.yaml")
+	want := Config{
+		Peers:  []PeerConfig{{Hostname: "desktop.example.ts.net", Port: 9876}},
+		Listen: ListenConfig{Host: "tailscale", Port: 9876},
+	}
+	if err := SaveConfig(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Peers) != 1 || got.Peers[0] != want.Peers[0] || got.Listen != want.Listen {
+		t.Fatalf("config = %+v, want %+v", got, want)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0077 != 0 {
+		t.Fatalf("config permissions = %o, want private", info.Mode().Perm())
+	}
+}

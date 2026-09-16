@@ -23,6 +23,15 @@ var (
 	listInterfaceAddrs = net.InterfaceAddrs
 )
 
+func isTailscaleAddr(ip netip.Addr) bool {
+	for _, prefix := range tailscalePrefixes {
+		if prefix.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveListenHost resolves the secure-by-default "tailscale" alias to a
 // local Tailscale address. Use "*" only when listening on every interface is
 // explicitly desired.
@@ -72,6 +81,18 @@ func resolveListenHost(configured string) (string, error) {
 }
 
 func tailscaleIPsFromCLI() ([]netip.Addr, error) {
+	output, err := runTailscaleCLI("ip", "-4")
+	if err != nil {
+		return nil, err
+	}
+	ips := parseTailscaleIPs(string(output))
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("tailscale returned no IPv4 address")
+	}
+	return ips, nil
+}
+
+func tailscaleCommandCandidates() []string {
 	var candidates []string
 	if path, err := exec.LookPath("tailscale"); err == nil {
 		candidates = append(candidates, path)
@@ -88,26 +109,25 @@ func tailscaleIPsFromCLI() ([]netip.Addr, error) {
 			candidates = append(candidates, filepath.Join(programFiles, "Tailscale", "tailscale.exe"))
 		}
 	}
+	return candidates
+}
 
+func runTailscaleCLI(args ...string) ([]byte, error) {
 	var lastErr error
 	seen := make(map[string]bool)
-	for _, command := range candidates {
+	for _, command := range tailscaleCommandCandidates() {
 		if command == "" || seen[command] {
 			continue
 		}
 		seen[command] = true
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		output, err := exec.CommandContext(ctx, command, "ip", "-4").Output()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		output, err := exec.CommandContext(ctx, command, args...).Output()
 		cancel()
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		ips := parseTailscaleIPs(string(output))
-		if len(ips) > 0 {
-			return ips, nil
-		}
-		lastErr = fmt.Errorf("%s returned no Tailscale IPv4 address", command)
+		return output, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("tailscale CLI not found")

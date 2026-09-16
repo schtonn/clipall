@@ -285,15 +285,6 @@ func validateWindowsPathComponent(component string) error {
 	return nil
 }
 
-func isTailscaleAddr(ip netip.Addr) bool {
-	for _, prefix := range tailscalePrefixes {
-		if prefix.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
-
 func receivedStagingSelection(paths []string) bool {
 	if len(paths) == 0 {
 		return false

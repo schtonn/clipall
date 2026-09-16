@@ -52,3 +52,11 @@ func TestBuildAutostartArgsPreservesExplicitDefaults(t *testing.T) {
 		t.Fatalf("args = %q, want %q", got, want)
 	}
 }
+
+func TestBuildAutostartArgsPreservesDisabledFiles(t *testing.T) {
+	got := buildAutostartArgs(autostartOptions{filesSet: true})
+	want := []string{"--files=false"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %q, want %q", got, want)
+	}
+}

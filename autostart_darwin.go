@@ -84,6 +84,12 @@ func installAutostart(executable string, args []string) error {
 	return nil
 }
 
+// bootstrap starts a RunAtLoad LaunchAgent immediately, so no separate launch
+// is necessary after installing it.
+func startAutostartNow(string, []string) error {
+	return nil
+}
+
 func uninstallAutostart() error {
 	plistPath, err := launchAgentPath()
 	if err != nil {
