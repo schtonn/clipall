@@ -3,15 +3,16 @@
 package main
 
 /*
-#cgo CFLAGS: -x objective-c -fno-objc-arc
+#cgo CFLAGS: -x objective-c -fno-objc-arc -fblocks
 #cgo LDFLAGS: -framework AppKit -framework Foundation
 
 #include <stdlib.h>
 #include <string.h>
+#include <dispatch/dispatch.h>
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 
-extern char *clipallProvideRemoteFiles(char *offerID);
+extern void clipallRemoteFilesRequested(char *offerID);
 
 static NSString *clipallRemoteFilesType(void) {
 	return @"io.github.schtonn.clipall.remote-files.v1";
@@ -19,15 +20,12 @@ static NSString *clipallRemoteFilesType(void) {
 
 @interface ClipallRemoteFileProvider : NSObject <NSPasteboardItemDataProvider> {
 	NSString *_offerID;
-	NSUInteger _rootIndex;
 }
 @property(copy) NSString *offerID;
-@property(assign) NSUInteger rootIndex;
 @end
 
 @implementation ClipallRemoteFileProvider
 @synthesize offerID = _offerID;
-@synthesize rootIndex = _rootIndex;
 
 - (void)pasteboard:(NSPasteboard *)pasteboard
               item:(NSPasteboardItem *)item
@@ -35,24 +33,20 @@ provideDataForType:(NSPasteboardType)type {
 	if (![type isEqualToString:NSPasteboardTypeFileURL] || _offerID == nil) {
 		return;
 	}
-	char *encodedPaths = clipallProvideRemoteFiles((char *)[_offerID UTF8String]);
-	if (encodedPaths == NULL) {
-		return;
-	}
-	NSData *data = [NSData dataWithBytes:encodedPaths length:strlen(encodedPaths)];
-	free(encodedPaths);
-	NSError *error = nil;
-	id decoded = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
-	if (error != nil || ![decoded isKindOfClass:[NSArray class]] || _rootIndex >= [decoded count]) {
-		return;
-	}
-	id path = [decoded objectAtIndex:_rootIndex];
-	if (![path isKindOfClass:[NSString class]]) {
-		return;
-	}
-	NSURL *url = [NSURL fileURLWithPath:path];
-	if (url != nil) {
-		[item setString:[url absoluteString] forType:NSPasteboardTypeFileURL];
+
+	// Finder waits synchronously for every advertised pasteboard flavor. Always
+	// fulfill this request before doing anything else; returning without setting
+	// data leaves pasteboardd waiting until its roughly 40-second timeout.
+	[item setData:[NSData data] forType:NSPasteboardTypeFileURL];
+
+	// Starting Go code from the provider callback can itself delay pasteboardd.
+	// Notify the downloader only after this synchronous callback has returned.
+	char *identifier = strdup([_offerID UTF8String]);
+	if (identifier != NULL) {
+		dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+			clipallRemoteFilesRequested(identifier);
+			free(identifier);
+		});
 	}
 }
 
@@ -145,7 +139,6 @@ static int clipallWriteRemoteFileOffer(const char *offerID, const char *encodedR
 			NSPasteboardItem *item = [[[NSPasteboardItem alloc] init] autorelease];
 			ClipallRemoteFileProvider *provider = [[[ClipallRemoteFileProvider alloc] init] autorelease];
 			provider.offerID = identifier;
-			provider.rootIndex = index;
 			if (![item setDataProvider:provider forTypes:@[NSPasteboardTypeFileURL]]) {
 				return 0;
 			}
@@ -380,21 +373,20 @@ func (s *macRemoteFileState) cancelInFlightLocked() {
 
 var errMacFileDownloadPending = errors.New("remote files are downloading")
 
-func (s *macRemoteFileState) resolve(offerID string) ([]string, error) {
+func (s *macRemoteFileState) requestDownload(offerID string) error {
 	s.mu.Lock()
 	if s.ctx == nil || s.offer.ID != offerID {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("remote file offer is no longer current")
+		return fmt.Errorf("remote file offer is no longer current")
 	}
 	if s.resultReady {
-		paths := append([]string(nil), s.paths...)
 		err := s.resultErr
 		s.mu.Unlock()
-		return paths, err
+		return err
 	}
 	if s.inFlightID == offerID {
 		s.mu.Unlock()
-		return nil, errMacFileDownloadPending
+		return errMacFileDownloadPending
 	}
 	ctx := s.ctx
 	offer := s.offer
@@ -408,7 +400,7 @@ func (s *macRemoteFileState) resolve(offerID string) ([]string, error) {
 	// Finder can finish handling Command-V without becoming unresponsive.
 	log.Printf("[files] Finder requested remote files; downloading in background")
 	go s.download(ctx, offer, done)
-	return nil, errMacFileDownloadPending
+	return errMacFileDownloadPending
 }
 
 func (s *macRemoteFileState) download(ctx context.Context, offer FileOffer, done chan struct{}) {
