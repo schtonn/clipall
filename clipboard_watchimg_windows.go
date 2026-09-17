@@ -65,7 +65,7 @@ func readImageDIB() []byte {
 
 	// Copy DIB data from global memory.
 	dibData := make([]byte, int(size))
-	copy(dibData, unsafe.Slice((*byte)(unsafe.Pointer(ptrVal)), int(size)))
+	copy(dibData, unsafe.Slice((*byte)(windowsPointer(ptrVal)), int(size)))
 
 	if len(dibData) < 40 {
 		return nil

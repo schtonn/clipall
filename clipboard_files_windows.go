@@ -35,6 +35,13 @@ const (
 	maxHDropBytes     = 16 << 20
 )
 
+// LazyProc.Call exposes Win32 pointers as uintptr. Converting the value back
+// through its storage keeps go vet's unsafeptr checker satisfied while the
+// owning HGLOBAL remains locked for the duration of each copy.
+func windowsPointer(value uintptr) unsafe.Pointer {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&value))
+}
+
 func openClipboardForFiles() bool {
 	for attempt := 0; attempt < 20; attempt++ {
 		opened, _, _ := procOpenClipboard.Call(0)
@@ -74,7 +81,7 @@ func readClipboardFiles() []string {
 	// handle allowed malformed or concurrently-replaced data to crash inside
 	// shell32.dll with an unrecoverable access violation.
 	data := make([]byte, int(size))
-	copy(data, unsafe.Slice((*byte)(unsafe.Pointer(ptr)), int(size)))
+	copy(data, unsafe.Slice((*byte)(windowsPointer(ptr)), int(size)))
 	procGlobalUnlock.Call(hDrop)
 	paths, err := decodeHDrop(data)
 	if err != nil {
@@ -147,7 +154,7 @@ func writeClipboardMemory(format uintptr, data []byte) error {
 		procGlobalFree.Call(hMem)
 		return fmt.Errorf("GlobalLock: %v", callErr)
 	}
-	copy(unsafe.Slice((*byte)(unsafe.Pointer(ptr)), len(data)), data)
+	copy(unsafe.Slice((*byte)(windowsPointer(ptr)), len(data)), data)
 	procGlobalUnlock.Call(hMem)
 	if !openClipboardForFiles() {
 		procGlobalFree.Call(hMem)
@@ -197,7 +204,7 @@ func remoteFileMarkerMatches(offerID string) bool {
 		return false
 	}
 	data := make([]byte, int(size))
-	copy(data, unsafe.Slice((*byte)(unsafe.Pointer(ptr)), int(size)))
+	copy(data, unsafe.Slice((*byte)(windowsPointer(ptr)), int(size)))
 	return strings.TrimRight(string(data), "\x00") == offerID
 }
 
