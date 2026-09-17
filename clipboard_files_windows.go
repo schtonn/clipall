@@ -14,9 +14,6 @@ import (
 )
 
 var (
-	shell32Files = syscall.NewLazyDLL("shell32.dll")
-
-	procDragQueryFileW           = shell32Files.NewProc("DragQueryFileW")
 	procEmptyClipboard           = user32w.NewProc("EmptyClipboard")
 	procSetClipboardData         = user32w.NewProc("SetClipboardData")
 	procRegisterClipboardFormatW = user32w.NewProc("RegisterClipboardFormatW")
@@ -35,6 +32,7 @@ const (
 	vkV               = 0x56
 	keyeventfKeyUp    = 0x0002
 	remoteFilesFormat = "clipall.remote-files.v1"
+	maxHDropBytes     = 16 << 20
 )
 
 func openClipboardForFiles() bool {
@@ -61,16 +59,27 @@ func readClipboardFiles() []string {
 	if hDrop == 0 {
 		return nil
 	}
-	count, _, _ := procDragQueryFileW.Call(hDrop, ^uintptr(0), 0, 0)
-	paths := make([]string, 0, count)
-	for index := uintptr(0); index < count; index++ {
-		length, _, _ := procDragQueryFileW.Call(hDrop, index, 0, 0)
-		if length == 0 {
-			continue
-		}
-		buffer := make([]uint16, length+1)
-		procDragQueryFileW.Call(hDrop, index, uintptr(unsafe.Pointer(&buffer[0])), length+1)
-		paths = append(paths, syscall.UTF16ToString(buffer))
+	size, _, _ := procGlobalSize.Call(hDrop)
+	if size < dropFilesHeaderSize || size > maxHDropBytes {
+		log.Printf("[files] ignoring invalid CF_HDROP size %d", size)
+		return nil
+	}
+	ptr, _, _ := procGlobalLock.Call(hDrop)
+	if ptr == 0 {
+		return nil
+	}
+	// Clipboard ownership can change immediately after CloseClipboard. Copy the
+	// complete HGLOBAL while it is both locked and protected by OpenClipboard,
+	// then parse only Go-owned memory. Calling DragQueryFileW with the clipboard
+	// handle allowed malformed or concurrently-replaced data to crash inside
+	// shell32.dll with an unrecoverable access violation.
+	data := make([]byte, int(size))
+	copy(data, unsafe.Slice((*byte)(unsafe.Pointer(ptr)), int(size)))
+	procGlobalUnlock.Call(hDrop)
+	paths, err := decodeHDrop(data)
+	if err != nil {
+		log.Printf("[files] ignoring invalid CF_HDROP data: %v", err)
+		return nil
 	}
 	return paths
 }
@@ -138,7 +147,7 @@ func writeClipboardMemory(format uintptr, data []byte) error {
 		procGlobalFree.Call(hMem)
 		return fmt.Errorf("GlobalLock: %v", callErr)
 	}
-	copy(unsafe.Slice((*byte)(*(*unsafe.Pointer)(unsafe.Pointer(&ptr))), len(data)), data)
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(ptr)), len(data)), data)
 	procGlobalUnlock.Call(hMem)
 	if !openClipboardForFiles() {
 		procGlobalFree.Call(hMem)
@@ -187,8 +196,8 @@ func remoteFileMarkerMatches(offerID string) bool {
 	if size == 0 || size > 128 {
 		return false
 	}
-	data := make([]byte, size)
-	copy(data, unsafe.Slice((*byte)(*(*unsafe.Pointer)(unsafe.Pointer(&ptr))), size))
+	data := make([]byte, int(size))
+	copy(data, unsafe.Slice((*byte)(unsafe.Pointer(ptr)), int(size)))
 	return strings.TrimRight(string(data), "\x00") == offerID
 }
 
@@ -198,26 +207,6 @@ func writeClipboardFiles(paths []string) error {
 		return err
 	}
 	return writeClipboardMemory(cfHDrop, data)
-}
-
-func encodeHDrop(paths []string) ([]byte, error) {
-	words := make([]uint16, 0)
-	for _, path := range paths {
-		encoded, err := syscall.UTF16FromString(path)
-		if err != nil {
-			return nil, err
-		}
-		words = append(words, encoded...)
-	}
-	words = append(words, 0)
-	data := make([]byte, 20+len(words)*2)
-	data[0] = 20 // DROPFILES.pFiles
-	data[16] = 1 // DROPFILES.fWide
-	for i, word := range words {
-		data[20+i*2] = byte(word)
-		data[21+i*2] = byte(word >> 8)
-	}
-	return data, nil
 }
 
 func keyDown(key uintptr) bool {

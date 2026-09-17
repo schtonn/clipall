@@ -59,13 +59,13 @@ func readImageDIB() []byte {
 	defer procGlobalUnlock.Call(hMem)
 
 	size, _, _ := procGlobalSize.Call(hMem)
-	if size == 0 {
+	if size == 0 || size > MaxPayloadSize+4096 {
 		return nil
 	}
 
 	// Copy DIB data from global memory.
-	dibData := make([]byte, size)
-	copy(dibData, unsafe.Slice((*byte)(*(*unsafe.Pointer)(unsafe.Pointer(&ptrVal))), size))
+	dibData := make([]byte, int(size))
+	copy(dibData, unsafe.Slice((*byte)(unsafe.Pointer(ptrVal)), int(size)))
 
 	if len(dibData) < 40 {
 		return nil
