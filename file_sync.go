@@ -304,8 +304,17 @@ func receivedStagingSelection(paths []string) bool {
 }
 
 func receiveFileOffer(ctx context.Context, offer FileOffer) ([]string, error) {
+	return receiveFileOfferWithProgress(ctx, offer, nil)
+}
+
+func receiveFileOfferWithProgress(ctx context.Context, offer FileOffer, progress func(completed, total int64)) ([]string, error) {
 	if err := validateFileOffer(offer); err != nil {
 		return nil, err
+	}
+	_, _, totalBytes := fileOfferStats(offer)
+	var completedBytes int64
+	if progress != nil {
+		progress(0, totalBytes)
 	}
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {
@@ -329,11 +338,21 @@ func receiveFileOffer(ctx context.Context, offer FileOffer) ([]string, error) {
 			return nil, err
 		}
 		if info, err := os.Stat(target); err == nil && info.Mode().IsRegular() && info.Size() == entry.Size {
+			completedBytes += entry.Size
+			if progress != nil {
+				progress(completedBytes, totalBytes)
+			}
 			continue
 		}
-		if err := fetchOfferedFile(ctx, offer, index, target, entry.Size); err != nil {
+		base := completedBytes
+		if err := fetchOfferedFileWithProgress(ctx, offer, index, target, entry.Size, func(fileBytes int64) {
+			if progress != nil {
+				progress(base+fileBytes, totalBytes)
+			}
+		}); err != nil {
 			return nil, fmt.Errorf("fetch %s: %w", entry.Path, err)
 		}
+		completedBytes += entry.Size
 	}
 	rootPaths := make([]string, len(offer.Roots))
 	for i, root := range offer.Roots {
@@ -360,12 +379,40 @@ func pruneFileStaging(root, keepID string) {
 }
 
 func fetchOfferedFile(ctx context.Context, offer FileOffer, index int, target string, expectedSize int64) error {
+	return fetchOfferedFileWithProgress(ctx, offer, index, target, expectedSize, nil)
+}
+
+const fileTransferIdleTimeout = 30 * time.Second
+
+type fileTransferReader struct {
+	conn     net.Conn
+	progress func(int64)
+	total    int64
+}
+
+func (r *fileTransferReader) Read(buffer []byte) (int, error) {
+	if err := r.conn.SetReadDeadline(time.Now().Add(fileTransferIdleTimeout)); err != nil {
+		return 0, err
+	}
+	n, err := r.conn.Read(buffer)
+	if n > 0 {
+		r.total += int64(n)
+		if r.progress != nil {
+			r.progress(r.total)
+		}
+	}
+	return n, err
+}
+
+func fetchOfferedFileWithProgress(ctx context.Context, offer FileOffer, index int, target string, expectedSize int64, progress func(int64)) error {
 	dialer := net.Dialer{Timeout: 10 * time.Second}
 	conn, err := dialer.DialContext(ctx, "tcp", offer.Address)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopCancel()
 	requestPayload, err := json.Marshal(FileFetchRequest{OfferID: offer.ID, Index: index})
 	if err != nil {
 		return err
@@ -377,7 +424,7 @@ func fetchOfferedFile(ctx context.Context, offer FileOffer, index int, target st
 	if _, err := conn.Write(request); err != nil {
 		return err
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(fileOfferLifetime))
+	_ = conn.SetReadDeadline(time.Now().Add(fileTransferIdleTimeout))
 	header := make([]byte, 9)
 	if _, err := io.ReadFull(conn, header); err != nil {
 		return err
@@ -394,7 +441,8 @@ func fetchOfferedFile(ctx context.Context, offer FileOffer, index int, target st
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.CopyN(file, conn, size)
+	reader := &fileTransferReader{conn: conn, progress: progress}
+	_, copyErr := io.CopyN(file, reader, size)
 	closeErr := file.Close()
 	if copyErr != nil {
 		_ = os.Remove(part)

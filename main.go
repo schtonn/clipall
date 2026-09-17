@@ -15,6 +15,13 @@ import (
 var version = "dev"
 
 func main() {
+	if handled, err := runInternalPlatformMode(os.Args[1:]); handled {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "clipall helper: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	peers := flag.String("peers", "", "comma-separated peer addresses (host:port)")
 	listenHost := flag.String("listen-host", "tailscale", "address to listen on (tailscale, an IP, or * for all interfaces)")
 	listen := flag.Int("listen", 9876, "port to listen on")

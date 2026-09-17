@@ -1,10 +1,7 @@
-//go:build windows
-
 package main
 
 import (
 	"encoding/binary"
-	"syscall"
 	"testing"
 )
 
@@ -17,23 +14,36 @@ func TestEncodeHDrop(t *testing.T) {
 	if binary.LittleEndian.Uint32(data[0:4]) != 20 || binary.LittleEndian.Uint32(data[16:20]) != 1 {
 		t.Fatalf("invalid DROPFILES header: %v", data[:20])
 	}
-	words := make([]uint16, (len(data)-20)/2)
-	for i := range words {
-		words[i] = binary.LittleEndian.Uint16(data[20+i*2:])
-	}
-	var got []string
-	start := 0
-	for i, word := range words {
-		if word != 0 {
-			continue
-		}
-		if i == start {
-			break
-		}
-		got = append(got, syscall.UTF16ToString(words[start:i]))
-		start = i + 1
+	got, err := decodeHDrop(data)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if len(got) != len(paths) || got[0] != paths[0] || got[1] != paths[1] {
 		t.Fatalf("decoded paths = %q, want %q", got, paths)
+	}
+}
+
+func TestDecodeHDropRejectsMalformedData(t *testing.T) {
+	valid, err := encodeHDrop([]string{`C:\one.txt`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := map[string][]byte{
+		"short header":       make([]byte, 19),
+		"offset in header":   append([]byte(nil), valid...),
+		"offset past end":    append([]byte(nil), valid...),
+		"ANSI list":          append([]byte(nil), valid...),
+		"odd UTF-16 payload": append(append([]byte(nil), valid...), 1),
+		"missing terminator": append([]byte(nil), valid[:len(valid)-2]...),
+	}
+	binary.LittleEndian.PutUint32(tests["offset in header"][0:4], 4)
+	binary.LittleEndian.PutUint32(tests["offset past end"][0:4], uint32(len(valid)+2))
+	binary.LittleEndian.PutUint32(tests["ANSI list"][16:20], 0)
+	for name, data := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodeHDrop(data); err == nil {
+				t.Fatal("decodeHDrop accepted malformed data")
+			}
+		})
 	}
 }
