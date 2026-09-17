@@ -9,6 +9,7 @@ import "C"
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 )
 
@@ -19,7 +20,9 @@ func clipallProvideRemoteFiles(offerID *C.char) *C.char {
 	}
 	paths, err := macRemoteFiles.resolve(C.GoString(offerID))
 	if err != nil {
-		log.Printf("[files] on-demand Finder download failed: %v", err)
+		if !errors.Is(err, errMacFileDownloadPending) {
+			log.Printf("[files] on-demand Finder request failed: %v", err)
+		}
 		return nil
 	}
 	encoded, err := json.Marshal(paths)
