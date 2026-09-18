@@ -206,7 +206,7 @@ func main() {
 
 	node := NewNodeAt(cfg.Listen.Host, cfg.Listen.Port, peerAddrs, *imageDir, *imageMaxMB)
 	node.filesEnabled = *filesEnabled
-	if err := node.Run(ctx); err != nil {
+	if err := runNodeWithPlatformLoop(ctx, node, *filesEnabled); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
