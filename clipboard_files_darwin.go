@@ -4,15 +4,17 @@ package main
 
 /*
 #cgo CFLAGS: -x objective-c -fno-objc-arc -fblocks
-#cgo LDFLAGS: -framework AppKit -framework Foundation
+#cgo LDFLAGS: -framework AppKit -framework Foundation -framework ApplicationServices
 
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <sys/time.h>
 #include <dispatch/dispatch.h>
 #import <AppKit/AppKit.h>
+#import <ApplicationServices/ApplicationServices.h>
 #import <Foundation/Foundation.h>
 
 extern void clipallRemoteFilesRequested(char *offerID, long long requestedAtMillis);
@@ -37,63 +39,66 @@ static unsigned long long clipallCurrentThreadID(void) {
 
 static void clipallProviderLog(const char *phase, NSString *offerID, int result) {
 	fprintf(stderr,
-	        "%lld [files-debug] pasteboard-provider phase=%s offer=%.12s thread=%llu result=%d\n",
+	        "%lld [files-debug] pasteboard-promise phase=%s offer=%.12s thread=%llu result=%d\n",
 	        clipallUnixMillis(), phase,
 	        offerID == nil ? "(nil)" : [offerID UTF8String],
 	        clipallCurrentThreadID(), result);
 	fflush(stderr);
 }
 
-@interface ClipallRemoteFileProvider : NSObject <NSPasteboardItemDataProvider> {
-	NSString *_offerID;
-}
-@property(copy) NSString *offerID;
-@end
+static PasteboardRef clipallRemotePasteboard = NULL;
 
-@implementation ClipallRemoteFileProvider
-@synthesize offerID = _offerID;
+// Carbon's Pasteboard Manager owns promise delivery and calls this function
+// directly when Finder requests a promised file URL. This avoids depending on
+// an NSPasteboardItemDataProvider object in a headless process.
+static OSStatus clipallPromiseKeeper(PasteboardRef pasteboard,
+		PasteboardItemID item, CFStringRef flavorType, void *context) {
+	@autoreleasepool {
+		(void)context;
+		clipallProviderLog("entered", nil, 0);
+		if (!CFEqual(flavorType, CFSTR("public.file-url"))) {
+			clipallProviderLog("ignored", nil, 0);
+			return noErr;
+		}
 
-- (void)pasteboard:(NSPasteboard *)pasteboard
-              item:(NSPasteboardItem *)item
-provideDataForType:(NSPasteboardType)type {
-	clipallProviderLog("entered", _offerID, 0);
-	if (![type isEqualToString:NSPasteboardTypeFileURL] || _offerID == nil) {
-		clipallProviderLog("ignored", _offerID, 0);
-		return;
+		// Finder is synchronously waiting for this flavor. Fulfill it before
+		// allocating strings or entering Go; the first paste remains a no-op.
+		CFDataRef empty = CFDataCreate(kCFAllocatorDefault, NULL, 0);
+		OSStatus status = empty == NULL ? memFullErr :
+			PasteboardPutItemFlavor(pasteboard, item, flavorType, empty,
+			                        kPasteboardFlavorNoFlags);
+		if (empty != NULL) {
+			CFRelease(empty);
+		}
+
+		CFDataRef marker = NULL;
+		OSStatus markerStatus = PasteboardCopyItemFlavorData(
+			pasteboard, item, (CFStringRef)clipallRemoteFilesType(), &marker);
+		NSString *identifier = nil;
+		if (markerStatus == noErr && marker != NULL) {
+			identifier = [[[NSString alloc] initWithData:(NSData *)marker
+			                                      encoding:NSUTF8StringEncoding] autorelease];
+			CFRelease(marker);
+		}
+		clipallProviderLog("fulfilled-empty", identifier, (int)status);
+
+		if (status == noErr && identifier != nil) {
+			char *copiedIdentifier = strdup([identifier UTF8String]);
+			if (copiedIdentifier != NULL) {
+				long long requestedAtMillis = clipallUnixMillis();
+				dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+					clipallRemoteFilesRequested(copiedIdentifier, requestedAtMillis);
+					free(copiedIdentifier);
+				});
+				clipallProviderLog("download-dispatched", identifier, 1);
+			} else {
+				clipallProviderLog("download-dispatched", identifier, 0);
+			}
+		}
+		clipallProviderLog("returned", identifier, (int)status);
+		return status;
 	}
-
-	// Finder waits synchronously for every advertised pasteboard flavor. Always
-	// fulfill this request before doing anything else; returning without setting
-	// data leaves pasteboardd waiting until its roughly 40-second timeout.
-	BOOL fulfilled = [item setData:[NSData data] forType:NSPasteboardTypeFileURL];
-	clipallProviderLog("fulfilled-empty", _offerID, fulfilled ? 1 : 0);
-
-	// Starting Go code from the provider callback can itself delay pasteboardd.
-	// Notify the downloader only after this synchronous callback has returned.
-	char *identifier = strdup([_offerID UTF8String]);
-	if (identifier != NULL) {
-		long long requestedAtMillis = clipallUnixMillis();
-		dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-			clipallRemoteFilesRequested(identifier, requestedAtMillis);
-			free(identifier);
-		});
-		clipallProviderLog("download-dispatched", _offerID, 1);
-	} else {
-		clipallProviderLog("download-dispatched", _offerID, 0);
-	}
-	clipallProviderLog("returned", _offerID, fulfilled ? 1 : 0);
 }
-
-- (void)pasteboardFinishedWithDataProvider:(NSPasteboard *)pasteboard {
-}
-
-- (void)dealloc {
-	[_offerID release];
-	[super dealloc];
-}
-@end
-
-static NSMutableArray *clipallRemoteFileProviders = nil;
 
 static long long clipallPasteboardChangeCount(void) {
 	@autoreleasepool {
@@ -179,30 +184,45 @@ static int clipallWriteRemoteFileOffer(const char *offerID, const char *encodedR
 			return 0;
 		}
 
-		NSMutableArray *items = [NSMutableArray arrayWithCapacity:[decoded count]];
-		NSMutableArray *providers = [NSMutableArray arrayWithCapacity:[decoded count]];
 		NSData *marker = [identifier dataUsingEncoding:NSUTF8StringEncoding];
-		for (NSUInteger index = 0; index < [decoded count]; index++) {
-			NSPasteboardItem *item = [[[NSPasteboardItem alloc] init] autorelease];
-			ClipallRemoteFileProvider *provider = [[[ClipallRemoteFileProvider alloc] init] autorelease];
-			provider.offerID = identifier;
-			if (![item setDataProvider:provider forTypes:@[NSPasteboardTypeFileURL]]) {
-				return 0;
-			}
-			if (index == 0 && ![item setData:marker forType:clipallRemoteFilesType()]) {
-				return 0;
-			}
-			[items addObject:item];
-			[providers addObject:provider];
-		}
-
-		NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
-		[pasteboard clearContents];
-		if (![pasteboard writeObjects:items]) {
+		PasteboardRef pasteboard = NULL;
+		OSStatus status = PasteboardCreate(kPasteboardClipboard, &pasteboard);
+		if (status != noErr || pasteboard == NULL) {
 			return 0;
 		}
-		[clipallRemoteFileProviders release];
-		clipallRemoteFileProviders = [providers mutableCopy];
+		status = PasteboardClear(pasteboard);
+		if (status == noErr) {
+			status = PasteboardSetPromiseKeeper(pasteboard, clipallPromiseKeeper, NULL);
+		}
+		for (NSUInteger index = 0; index < [decoded count]; index++) {
+			if (status != noErr) {
+				break;
+			}
+			PasteboardItemID item = (PasteboardItemID)(uintptr_t)(index + 1);
+			status = PasteboardPutItemFlavor(
+				pasteboard, item, CFSTR("public.file-url"), kPasteboardPromisedData,
+				kPasteboardFlavorNoFlags);
+			if (status == noErr) {
+				status = PasteboardPutItemFlavor(
+					pasteboard, item, (CFStringRef)clipallRemoteFilesType(),
+					(CFDataRef)marker, kPasteboardFlavorNoFlags);
+			}
+		}
+
+		if (status != noErr) {
+			fprintf(stderr, "%lld [files-debug] carbon promise registration failed: status=%d items=%lu\n",
+			        clipallUnixMillis(), (int)status, (unsigned long)[decoded count]);
+			fflush(stderr);
+			CFRelease(pasteboard);
+			return 0;
+		}
+		if (clipallRemotePasteboard != NULL) {
+			CFRelease(clipallRemotePasteboard);
+		}
+		clipallRemotePasteboard = pasteboard;
+		fprintf(stderr, "%lld [files-debug] carbon promise registered: status=0 items=%lu thread=%llu\n",
+		        clipallUnixMillis(), (unsigned long)[decoded count], clipallCurrentThreadID());
+		fflush(stderr);
 		return 1;
 	}
 }
@@ -252,8 +272,10 @@ static int clipallWriteDownloadedFilePaths(const char *offerID, const char *enco
 		if (![pasteboard writeObjects:items]) {
 			return 0;
 		}
-		[clipallRemoteFileProviders release];
-		clipallRemoteFileProviders = nil;
+		if (clipallRemotePasteboard != NULL) {
+			CFRelease(clipallRemotePasteboard);
+			clipallRemotePasteboard = NULL;
+		}
 		return 1;
 	}
 }
@@ -307,7 +329,7 @@ func watchFiles(ctx context.Context) <-chan []string {
 		sequence := int64(C.clipallPasteboardChangeCount())
 		threadID := uint64(C.clipallCurrentThreadID())
 		darwinClipboardMu.Unlock()
-		log.Printf("[files-debug] pasteboard loop started: thread=%d, change=%d, pump=continuous, modes=default+common+event+modal", threadID, sequence)
+		log.Printf("[files-debug] pasteboard loop started: thread=%d, change=%d, promise=carbon, pump=continuous, modes=default+common+event+modal", threadID, sequence)
 		var pumpCount uint64
 		var slowestPump time.Duration
 		for {
