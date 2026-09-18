@@ -106,20 +106,6 @@ static long long clipallPasteboardChangeCount(void) {
 	}
 }
 
-static void clipallRunLoopStep(void) {
-	@autoreleasepool {
-		NSRunLoop *loop = [NSRunLoop currentRunLoop];
-		[loop runMode:NSDefaultRunLoopMode
-		    beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
-		// Promise delivery can arrive through a common or AppKit-specific mode.
-		// Drain those modes too instead of only servicing the default mode.
-		NSDate *now = [NSDate date];
-		[loop runMode:NSRunLoopCommonModes beforeDate:now];
-		[loop runMode:NSEventTrackingRunLoopMode beforeDate:now];
-		[loop runMode:NSModalPanelRunLoopMode beforeDate:now];
-	}
-}
-
 static int clipallPasteboardHasRemoteFiles(void) {
 	@autoreleasepool {
 		return [[NSPasteboard generalPasteboard] availableTypeFromArray:@[clipallRemoteFilesType()]] != nil ? 1 : 0;
@@ -171,7 +157,7 @@ static char *clipallPasteboardFilePaths(void) {
 	}
 }
 
-static int clipallWriteRemoteFileOffer(const char *offerID, const char *encodedRoots) {
+static int clipallWriteRemoteFileOfferOnMain(const char *offerID, const char *encodedRoots) {
 	@autoreleasepool {
 		if (offerID == NULL || encodedRoots == NULL) {
 			return 0;
@@ -230,7 +216,7 @@ static int clipallWriteRemoteFileOffer(const char *offerID, const char *encodedR
 // Replace a still-current lazy offer with ordinary local file URLs after the
 // background download finishes. Verifying the marker prevents a slow download
 // from overwriting clipboard content the user copied in the meantime.
-static int clipallWriteDownloadedFilePaths(const char *offerID, const char *encodedPaths) {
+static int clipallWriteDownloadedFilePathsOnMain(const char *offerID, const char *encodedPaths) {
 	@autoreleasepool {
 		if (offerID == NULL || encodedPaths == NULL) {
 			return 0;
@@ -279,6 +265,54 @@ static int clipallWriteDownloadedFilePaths(const char *offerID, const char *enco
 		return 1;
 	}
 }
+
+// Promise ownership must be established by the AppKit main thread. The Go
+// node runs in the background while the initial macOS thread runs NSApp.
+static int clipallWriteRemoteFileOffer(const char *offerID, const char *encodedRoots) {
+	if (offerID == NULL || encodedRoots == NULL) {
+		return 0;
+	}
+	if ([NSThread isMainThread]) {
+		return clipallWriteRemoteFileOfferOnMain(offerID, encodedRoots);
+	}
+	char *copiedOfferID = strdup(offerID);
+	char *copiedRoots = strdup(encodedRoots);
+	if (copiedOfferID == NULL || copiedRoots == NULL) {
+		free(copiedOfferID);
+		free(copiedRoots);
+		return 0;
+	}
+	__block int result = 0;
+	dispatch_sync(dispatch_get_main_queue(), ^{
+		result = clipallWriteRemoteFileOfferOnMain(copiedOfferID, copiedRoots);
+	});
+	free(copiedOfferID);
+	free(copiedRoots);
+	return result;
+}
+
+static int clipallWriteDownloadedFilePaths(const char *offerID, const char *encodedPaths) {
+	if (offerID == NULL || encodedPaths == NULL) {
+		return 0;
+	}
+	if ([NSThread isMainThread]) {
+		return clipallWriteDownloadedFilePathsOnMain(offerID, encodedPaths);
+	}
+	char *copiedOfferID = strdup(offerID);
+	char *copiedPaths = strdup(encodedPaths);
+	if (copiedOfferID == NULL || copiedPaths == NULL) {
+		free(copiedOfferID);
+		free(copiedPaths);
+		return 0;
+	}
+	__block int result = 0;
+	dispatch_sync(dispatch_get_main_queue(), ^{
+		result = clipallWriteDownloadedFilePathsOnMain(copiedOfferID, copiedPaths);
+	});
+	free(copiedOfferID);
+	free(copiedPaths);
+	return result;
+}
 */
 import "C"
 
@@ -292,7 +326,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -318,8 +351,6 @@ var macPasteboardOfferRequests = make(chan macPasteboardOfferRequest)
 func watchFiles(ctx context.Context) <-chan []string {
 	ch := make(chan []string, 1)
 	go func() {
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
 		defer close(ch)
 		clipboardTicker := time.NewTicker(500 * time.Millisecond)
 		defer clipboardTicker.Stop()
@@ -327,15 +358,12 @@ func watchFiles(ctx context.Context) <-chan []string {
 		defer heartbeatTicker.Stop()
 		darwinClipboardMu.Lock()
 		sequence := int64(C.clipallPasteboardChangeCount())
-		threadID := uint64(C.clipallCurrentThreadID())
 		darwinClipboardMu.Unlock()
-		log.Printf("[files-debug] pasteboard loop started: thread=%d, change=%d, promise=carbon, pump=continuous, modes=default+common+event+modal", threadID, sequence)
-		var pumpCount uint64
-		var slowestPump time.Duration
+		log.Printf("[files-debug] pasteboard watcher started: change=%d, promise=carbon, owner=AppKit-main", sequence)
 		for {
 			select {
 			case <-ctx.Done():
-				log.Printf("[files-debug] pasteboard loop stopped: thread=%d", threadID)
+				log.Printf("[files-debug] pasteboard watcher stopped")
 				return
 			case request := <-macPasteboardOfferRequests:
 				started := time.Now()
@@ -359,12 +387,10 @@ func watchFiles(ctx context.Context) <-chan []string {
 				darwinClipboardMu.Unlock()
 				offerID, inFlightID, ready := macRemoteFiles.diagnosticSnapshot()
 				if hasRemote || hasReceived || offerID != "" || inFlightID != "" {
-					log.Printf("[files-debug] pasteboard heartbeat: thread=%d, pumps=%d, slowest=%s, observed_change=%d, current_change=%d, remote_marker=%t, received_marker=%t, offer=%s, inflight=%s, ready=%t",
-						threadID, pumpCount, slowestPump.Round(time.Millisecond), sequence, current,
+					log.Printf("[files-debug] pasteboard heartbeat: owner=AppKit-main, observed_change=%d, current_change=%d, remote_marker=%t, received_marker=%t, offer=%s, inflight=%s, ready=%t",
+						sequence, current,
 						hasRemote, hasReceived, shortMacOfferID(offerID), shortMacOfferID(inFlightID), ready)
 				}
-				pumpCount = 0
-				slowestPump = 0
 			case <-clipboardTicker.C:
 				darwinClipboardMu.Lock()
 				current := int64(C.clipallPasteboardChangeCount())
@@ -426,27 +452,6 @@ func watchFiles(ctx context.Context) <-chan []string {
 				case ch <- paths:
 				case <-ctx.Done():
 					return
-				}
-			default:
-				// NSPasteboardItemDataProvider is serviced by the run loop of the
-				// thread that registered it. Keep that loop active continuously;
-				// the old ticker left a blind window after every run-loop slice.
-				started := time.Now()
-				darwinClipboardMu.Lock()
-				C.clipallRunLoopStep()
-				darwinClipboardMu.Unlock()
-				elapsed := time.Since(started)
-				pumpCount++
-				if elapsed > slowestPump {
-					slowestPump = elapsed
-				}
-				if elapsed >= 250*time.Millisecond {
-					log.Printf("[files-debug] pasteboard run-loop step was slow: elapsed=%s, thread=%d", elapsed.Round(time.Millisecond), threadID)
-				}
-				// Some run loops return immediately while idle. Avoid spinning a
-				// CPU while preserving sub-20 ms provider response latency.
-				if elapsed < time.Millisecond {
-					time.Sleep(time.Millisecond - elapsed)
 				}
 			}
 		}
