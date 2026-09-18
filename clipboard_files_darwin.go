@@ -8,14 +8,40 @@ package main
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <pthread.h>
+#include <sys/time.h>
 #include <dispatch/dispatch.h>
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 
-extern void clipallRemoteFilesRequested(char *offerID);
+extern void clipallRemoteFilesRequested(char *offerID, long long requestedAtMillis);
 
 static NSString *clipallRemoteFilesType(void) {
 	return @"io.github.schtonn.clipall.remote-files.v1";
+}
+
+static NSString *clipallReceivedFilesType(void) {
+	return @"io.github.schtonn.clipall.received-files.v1";
+}
+
+static long long clipallUnixMillis(void) {
+	struct timeval now;
+	gettimeofday(&now, NULL);
+	return ((long long)now.tv_sec * 1000LL) + (now.tv_usec / 1000LL);
+}
+
+static unsigned long long clipallCurrentThreadID(void) {
+	return (unsigned long long)pthread_mach_thread_np(pthread_self());
+}
+
+static void clipallProviderLog(const char *phase, NSString *offerID, int result) {
+	fprintf(stderr,
+	        "%lld [files-debug] pasteboard-provider phase=%s offer=%.12s thread=%llu result=%d\n",
+	        clipallUnixMillis(), phase,
+	        offerID == nil ? "(nil)" : [offerID UTF8String],
+	        clipallCurrentThreadID(), result);
+	fflush(stderr);
 }
 
 @interface ClipallRemoteFileProvider : NSObject <NSPasteboardItemDataProvider> {
@@ -30,24 +56,32 @@ static NSString *clipallRemoteFilesType(void) {
 - (void)pasteboard:(NSPasteboard *)pasteboard
               item:(NSPasteboardItem *)item
 provideDataForType:(NSPasteboardType)type {
+	clipallProviderLog("entered", _offerID, 0);
 	if (![type isEqualToString:NSPasteboardTypeFileURL] || _offerID == nil) {
+		clipallProviderLog("ignored", _offerID, 0);
 		return;
 	}
 
 	// Finder waits synchronously for every advertised pasteboard flavor. Always
 	// fulfill this request before doing anything else; returning without setting
 	// data leaves pasteboardd waiting until its roughly 40-second timeout.
-	[item setData:[NSData data] forType:NSPasteboardTypeFileURL];
+	BOOL fulfilled = [item setData:[NSData data] forType:NSPasteboardTypeFileURL];
+	clipallProviderLog("fulfilled-empty", _offerID, fulfilled ? 1 : 0);
 
 	// Starting Go code from the provider callback can itself delay pasteboardd.
 	// Notify the downloader only after this synchronous callback has returned.
 	char *identifier = strdup([_offerID UTF8String]);
 	if (identifier != NULL) {
+		long long requestedAtMillis = clipallUnixMillis();
 		dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-			clipallRemoteFilesRequested(identifier);
+			clipallRemoteFilesRequested(identifier, requestedAtMillis);
 			free(identifier);
 		});
+		clipallProviderLog("download-dispatched", _offerID, 1);
+	} else {
+		clipallProviderLog("download-dispatched", _offerID, 0);
 	}
+	clipallProviderLog("returned", _offerID, fulfilled ? 1 : 0);
 }
 
 - (void)pasteboardFinishedWithDataProvider:(NSPasteboard *)pasteboard {
@@ -69,14 +103,27 @@ static long long clipallPasteboardChangeCount(void) {
 
 static void clipallRunLoopStep(void) {
 	@autoreleasepool {
-		[[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
-		                         beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+		NSRunLoop *loop = [NSRunLoop currentRunLoop];
+		[loop runMode:NSDefaultRunLoopMode
+		    beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+		// Promise delivery can arrive through a common or AppKit-specific mode.
+		// Drain those modes too instead of only servicing the default mode.
+		NSDate *now = [NSDate date];
+		[loop runMode:NSRunLoopCommonModes beforeDate:now];
+		[loop runMode:NSEventTrackingRunLoopMode beforeDate:now];
+		[loop runMode:NSModalPanelRunLoopMode beforeDate:now];
 	}
 }
 
 static int clipallPasteboardHasRemoteFiles(void) {
 	@autoreleasepool {
 		return [[NSPasteboard generalPasteboard] availableTypeFromArray:@[clipallRemoteFilesType()]] != nil ? 1 : 0;
+	}
+}
+
+static int clipallPasteboardHasReceivedFiles(void) {
+	@autoreleasepool {
+		return [[NSPasteboard generalPasteboard] availableTypeFromArray:@[clipallReceivedFilesType()]] != nil ? 1 : 0;
 	}
 }
 
@@ -182,8 +229,9 @@ static int clipallWriteDownloadedFilePaths(const char *offerID, const char *enco
 		if (error != nil || ![decoded isKindOfClass:[NSArray class]] || [decoded count] == 0) {
 			return 0;
 		}
-		NSMutableArray *urls = [NSMutableArray arrayWithCapacity:[decoded count]];
-		for (id path in decoded) {
+		NSMutableArray *items = [NSMutableArray arrayWithCapacity:[decoded count]];
+		for (NSUInteger index = 0; index < [decoded count]; index++) {
+			id path = [decoded objectAtIndex:index];
 			if (![path isKindOfClass:[NSString class]]) {
 				return 0;
 			}
@@ -191,10 +239,17 @@ static int clipallWriteDownloadedFilePaths(const char *offerID, const char *enco
 			if (url == nil) {
 				return 0;
 			}
-			[urls addObject:url];
+			NSPasteboardItem *item = [[[NSPasteboardItem alloc] init] autorelease];
+			if (![item setString:[url absoluteString] forType:NSPasteboardTypeFileURL]) {
+				return 0;
+			}
+			if (index == 0 && ![item setData:[NSData data] forType:clipallReceivedFilesType()]) {
+				return 0;
+			}
+			[items addObject:item];
 		}
 		[pasteboard clearContents];
-		if (![pasteboard writeObjects:urls]) {
+		if (![pasteboard writeObjects:items]) {
 			return 0;
 		}
 		[clipallRemoteFileProviders release];
@@ -246,30 +301,48 @@ func watchFiles(ctx context.Context) <-chan []string {
 		defer close(ch)
 		clipboardTicker := time.NewTicker(500 * time.Millisecond)
 		defer clipboardTicker.Stop()
-		runLoopTicker := time.NewTicker(20 * time.Millisecond)
-		defer runLoopTicker.Stop()
+		heartbeatTicker := time.NewTicker(10 * time.Second)
+		defer heartbeatTicker.Stop()
 		darwinClipboardMu.Lock()
 		sequence := int64(C.clipallPasteboardChangeCount())
+		threadID := uint64(C.clipallCurrentThreadID())
 		darwinClipboardMu.Unlock()
+		log.Printf("[files-debug] pasteboard loop started: thread=%d, change=%d, pump=continuous, modes=default+common+event+modal", threadID, sequence)
+		var pumpCount uint64
+		var slowestPump time.Duration
 		for {
 			select {
 			case <-ctx.Done():
+				log.Printf("[files-debug] pasteboard loop stopped: thread=%d", threadID)
 				return
 			case request := <-macPasteboardOfferRequests:
+				started := time.Now()
 				darwinClipboardMu.Lock()
+				var err error
 				if len(request.paths) > 0 {
-					request.result <- writeDownloadedFilePaths(request.offerID, request.paths)
+					err = writeDownloadedFilePaths(request.offerID, request.paths)
 				} else {
-					request.result <- writeRemoteFileOffer(request.offer)
+					err = writeRemoteFileOffer(request.offer)
 				}
 				darwinClipboardMu.Unlock()
-			case <-runLoopTicker.C:
-				// Lazy pasteboard providers are serviced through the run loop of
-				// the thread that registered them. A CLI has no AppKit main loop,
-				// so keep this dedicated thread's loop moving explicitly.
+				request.result <- err
+				log.Printf("[files-debug] pasteboard write finished: offer=%s, downloaded=%t, paths=%d, elapsed=%s, err=%v",
+					shortMacOfferID(firstNonEmpty(request.offerID, request.offer.ID)), len(request.paths) > 0,
+					len(request.paths), time.Since(started).Round(time.Millisecond), err)
+			case <-heartbeatTicker.C:
 				darwinClipboardMu.Lock()
-				C.clipallRunLoopStep()
+				current := int64(C.clipallPasteboardChangeCount())
+				hasRemote := C.clipallPasteboardHasRemoteFiles() != 0
+				hasReceived := C.clipallPasteboardHasReceivedFiles() != 0
 				darwinClipboardMu.Unlock()
+				offerID, inFlightID, ready := macRemoteFiles.diagnosticSnapshot()
+				if hasRemote || hasReceived || offerID != "" || inFlightID != "" {
+					log.Printf("[files-debug] pasteboard heartbeat: thread=%d, pumps=%d, slowest=%s, observed_change=%d, current_change=%d, remote_marker=%t, received_marker=%t, offer=%s, inflight=%s, ready=%t",
+						threadID, pumpCount, slowestPump.Round(time.Millisecond), sequence, current,
+						hasRemote, hasReceived, shortMacOfferID(offerID), shortMacOfferID(inFlightID), ready)
+				}
+				pumpCount = 0
+				slowestPump = 0
 			case <-clipboardTicker.C:
 				darwinClipboardMu.Lock()
 				current := int64(C.clipallPasteboardChangeCount())
@@ -277,13 +350,28 @@ func watchFiles(ctx context.Context) <-chan []string {
 				if current == sequence {
 					continue
 				}
+				previous := sequence
 				sequence = current
-				// Reading the lazy file URL would itself trigger the download. The
-				// marker tells our source watcher to leave a remote offer alone.
 				darwinClipboardMu.Lock()
 				hasRemoteFiles := C.clipallPasteboardHasRemoteFiles() != 0
+				hasReceivedFiles := C.clipallPasteboardHasReceivedFiles() != 0
 				darwinClipboardMu.Unlock()
+				log.Printf("[files-debug] pasteboard changed: previous=%d, current=%d, remote_marker=%t, received_marker=%t",
+					previous, current, hasRemoteFiles, hasReceivedFiles)
+				// Reading the lazy file URL would itself trigger the download. The
+				// marker tells our source watcher to leave a remote offer alone.
 				if hasRemoteFiles {
+					select {
+					case ch <- nil:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+				// Downloaded paths are real file URLs, but they originated remotely.
+				// Do not announce them back to peers as a fresh local copy.
+				if hasReceivedFiles {
+					macRemoteFiles.clear()
 					select {
 					case ch <- nil:
 					case <-ctx.Done():
@@ -317,6 +405,27 @@ func watchFiles(ctx context.Context) <-chan []string {
 				case <-ctx.Done():
 					return
 				}
+			default:
+				// NSPasteboardItemDataProvider is serviced by the run loop of the
+				// thread that registered it. Keep that loop active continuously;
+				// the old ticker left a blind window after every run-loop slice.
+				started := time.Now()
+				darwinClipboardMu.Lock()
+				C.clipallRunLoopStep()
+				darwinClipboardMu.Unlock()
+				elapsed := time.Since(started)
+				pumpCount++
+				if elapsed > slowestPump {
+					slowestPump = elapsed
+				}
+				if elapsed >= 250*time.Millisecond {
+					log.Printf("[files-debug] pasteboard run-loop step was slow: elapsed=%s, thread=%d", elapsed.Round(time.Millisecond), threadID)
+				}
+				// Some run loops return immediately while idle. Avoid spinning a
+				// CPU while preserving sub-20 ms provider response latency.
+				if elapsed < time.Millisecond {
+					time.Sleep(time.Millisecond - elapsed)
+				}
 			}
 		}
 	}()
@@ -336,6 +445,31 @@ type macRemoteFileState struct {
 }
 
 var macRemoteFiles macRemoteFileState
+
+func (s *macRemoteFileState) diagnosticSnapshot() (offerID, inFlightID string, ready bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.offer.ID, s.inFlightID, s.resultReady
+}
+
+func shortMacOfferID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	if id == "" {
+		return "-"
+	}
+	return id
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
 
 func (s *macRemoteFileState) set(ctx context.Context, offer FileOffer) {
 	s.mu.Lock()
@@ -606,6 +740,7 @@ func copyMacFile(source, target string, info os.FileInfo) error {
 }
 
 func writeRemoteFileOffer(offer FileOffer) error {
+	started := time.Now()
 	roots, err := json.Marshal(offer.Roots)
 	if err != nil {
 		return err
@@ -617,10 +752,15 @@ func writeRemoteFileOffer(offer FileOffer) error {
 	if C.clipallWriteRemoteFileOffer(offerID, encodedRoots) == 0 {
 		return fmt.Errorf("write lazy remote files to pasteboard")
 	}
+	files, directories, bytes := fileOfferStats(offer)
+	log.Printf("[files-debug] lazy offer published: offer=%s, roots=%d, entries=%d, files=%d, folders=%d, bytes=%d, change=%d, elapsed=%s",
+		shortMacOfferID(offer.ID), len(offer.Roots), len(offer.Entries), files, directories, bytes,
+		int64(C.clipallPasteboardChangeCount()), time.Since(started).Round(time.Millisecond))
 	return nil
 }
 
 func writeDownloadedFilePaths(offerID string, paths []string) error {
+	started := time.Now()
 	encoded, err := json.Marshal(paths)
 	if err != nil {
 		return err
@@ -631,6 +771,8 @@ func writeDownloadedFilePaths(offerID string, paths []string) error {
 	defer C.free(unsafe.Pointer(cPaths))
 	switch C.clipallWriteDownloadedFilePaths(cOfferID, cPaths) {
 	case 1:
+		log.Printf("[files-debug] downloaded file URLs published: offer=%s, paths=%d, change=%d, elapsed=%s",
+			shortMacOfferID(offerID), len(paths), int64(C.clipallPasteboardChangeCount()), time.Since(started).Round(time.Millisecond))
 		return nil
 	case 2:
 		return fmt.Errorf("clipboard changed before download completed")
