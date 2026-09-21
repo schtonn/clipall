@@ -34,7 +34,3 @@ func writeImage(data []byte) error {
 	}
 	return nil
 }
-
-func readImage() []byte {
-	return clipboard.Read(clipboard.FmtImage)
-}

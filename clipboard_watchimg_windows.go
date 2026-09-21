@@ -32,10 +32,12 @@ var (
 
 const cfDIB = 8
 
-// readImageDIB reads the clipboard image as CF_DIB and converts to PNG.
-// Caller MUST be on a locked OS thread (runtime.LockOSThread) because
-// Windows clipboard operations have thread affinity.
+// readImageDIB reads the clipboard image as CF_DIB and converts to PNG. Keep
+// OpenClipboard, GlobalLock and CloseClipboard on one OS thread: the Go
+// scheduler may otherwise migrate the caller while the clipboard is open.
 func readImageDIB() []byte {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	r, _, _ := procOpenClipboard.Call(0)
 	if r == 0 {
 		return nil
@@ -108,6 +110,15 @@ func readImageDIB() []byte {
 	}
 
 	return buf.Bytes()
+}
+
+// readImage is also used immediately after writing a remotely received image
+// so its re-encoded bytes can be registered as an expected clipboard echo.
+// Do not use x/clipboard's Windows readImage here: it dereferences clipboard
+// memory owned by another process and can raise an unrecoverable access
+// violation when the clipboard changes concurrently.
+func readImage() []byte {
+	return readImageDIB()
 }
 
 // watchImage watches the clipboard for image changes on Windows.
